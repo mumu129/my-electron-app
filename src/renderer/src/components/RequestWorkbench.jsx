@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Splitter, Flex, Input, Select, Segmented, Typography, Tag,
-  Button, Empty, Spin, App, Checkbox, Popover, Listy,
+  Button, Empty, Spin, App, Checkbox, Popover, Listy, Divider, Popconfirm,
 } from 'antd';
-import { SearchOutlined, PlusOutlined } from '@ant-design/icons';
-import RequestDetail from './RequestDetail';
+import {
+  SearchOutlined, PlusOutlined, ThunderboltOutlined, HolderOutlined,
+  EditOutlined, DeleteOutlined,
+} from '@ant-design/icons';
+import RequestDetail, { ParserModal } from './RequestDetail';
 import ParsePreviewPanel from './ParsePreviewPanel';
 import useElementSize from '../hooks/useElementSize';
 import { useAlgorithms } from '../store/algorithmStore';
 import { useScripts } from '../store/scriptStore';
 import { formatTime, statusColor, parseUrlParts, genUid } from '../utils/har';
 import { applyAssignmentsToEntry } from '../utils/applyAssignments';
-import { buildCustomTemplates, buildScriptTemplates } from '../utils/parsers';
+import { buildCustomTemplates, buildScriptTemplates, PARSER_TEMPLATES } from '../utils/parsers';
 
 const { Text } = Typography;
 
@@ -81,10 +84,71 @@ function TagManager({ currentTags, onChange }) {
   );
 }
 
+function ChainManagerPopover({ entry, allTemplates, onEdit, onRemove, children }) {
+  const assignments = entry._parseAssignments || [];
+  const content = (
+    <div style={{ minWidth: 320, maxWidth: 500 }}>
+      <Text strong style={{ fontSize: 12 }}>字段配置（共 {assignments.length} 条）</Text>
+      <Divider style={{ margin: '8px 0' }} />
+      {assignments.length === 0 ? (
+        <Text type="secondary" style={{ fontSize: 12 }}>（无）</Text>
+      ) : (
+        <Flex vertical gap={8}>
+          {assignments.map((a, ai) => {
+            const fieldLabel = Array.isArray(a.fieldPath) ? a.fieldPath.join('.') : String(a.fieldPath);
+            const chain = Array.isArray(a.chain) ? a.chain : [];
+            return (
+              <div key={ai} style={{ background: '#fafafa', borderRadius: 4, padding: 8 }}>
+                <Flex align="center" gap={6} style={{ marginBottom: 4 }}>
+                  <Tag color="purple" style={{ margin: 0 }}>字段</Tag>
+                  <Text style={{ flex: 1, fontSize: 12, fontFamily: 'monospace' }} ellipsis
+                    title={fieldLabel}>
+                    {fieldLabel}
+                  </Text>
+                  <Button size="small" type="text" icon={<EditOutlined />}
+                    onClick={() => onEdit(a)} title="编辑" />
+                  <Popconfirm title="删除此条链？" onConfirm={() => onRemove(a)}>
+                    <Button size="small" type="text" danger icon={<DeleteOutlined />} title="删除" />
+                  </Popconfirm>
+                </Flex>
+                {a.jsonSubPath && (
+                  <Tag color="cyan" style={{ margin: '0 4px 4px 0', fontSize: 11 }}>JSON 键：{a.jsonSubPath}</Tag>
+                )}
+                {a.valueSources && a.valueSources.length > 0 && (
+                  <Tag color="cyan" style={{ margin: '0 4px 4px 0', fontSize: 11 }}>
+                    多来源 ×{a.valueSources.length}
+                  </Tag>
+                )}
+                <Flex wrap gap={4}>
+                  {chain.map((item, i) => {
+                    const key = typeof item === 'string' ? item : item.key;
+                    return (
+                      <Tag key={i} style={{ margin: 0, fontSize: 11 }}>
+                        {i + 1}. {allTemplates[key]?.label || key}
+                      </Tag>
+                    );
+                  })}
+                </Flex>
+              </div>
+            );
+          })}
+        </Flex>
+      )}
+    </div>
+  );
+  return (
+    <Popover content={content} trigger="click" placement="bottomLeft">
+      {children}
+    </Popover>
+  );
+}
+
 export default function RequestWorkbench({
   entries, setEntries, projectId,
   showSelection = true, showAddToProject = false, onAddToProject,
   headerExtra = null, headerTopExtra = null, emptyNode = null,
+  enableDrag = false,
+  onReorder,
 }) {
   const { message } = App.useApp();
   const { getEffectiveConfigMap, getCustomAlgorithms } = useAlgorithms();
@@ -97,15 +161,25 @@ export default function RequestWorkbench({
   const [parsePreview, setParsePreview] = useState(null);
   const [activeTabKey, setActiveTabKey] = useState('general');
 
+  const [editingAssignment, setEditingAssignment] = useState(null);
+
+  const [draggingIndex, setDraggingIndex] = useState(null);
+  const [dropIndex, setDropIndex] = useState(null);
+
   const [listRef, { height: listHeight }, measure] = useElementSize();
 
-  // 用 ref 拿最新 scripts / config，防止 useEffect 依赖过多
   const scriptsRef = useRef(scripts);
   useEffect(() => { scriptsRef.current = scripts; }, [scripts]);
   const getCfgMapRef = useRef(getEffectiveConfigMap);
   useEffect(() => { getCfgMapRef.current = getEffectiveConfigMap; }, [getEffectiveConfigMap]);
   const getCustomRef = useRef(getCustomAlgorithms);
   useEffect(() => { getCustomRef.current = getCustomAlgorithms; }, [getCustomAlgorithms]);
+
+  const allTemplates = useMemo(() => ({
+    ...PARSER_TEMPLATES,
+    ...buildCustomTemplates(getCustomAlgorithms(projectId)),
+    ...buildScriptTemplates(scripts),
+  }), [getCustomAlgorithms, projectId, scripts]);
 
   useEffect(() => {
     if (!entries.some((e) => !e._uid)) return;
@@ -123,64 +197,45 @@ export default function RequestWorkbench({
     [entries, currentUid]
   );
 
-  // ===== 切换请求时，若有 _parseAssignments，自动应用并刷新预览 =====
   const assignmentsKey = current ? JSON.stringify(current._parseAssignments || []) : '';
-useEffect(() => {
-  if (!current) { setParsePreview(null); return; }
-  const assignments = current._parseAssignments || [];
-  if (assignments.length === 0) { setParsePreview(null); return; }
 
-  // 已经有针对当前请求的解析结果（且带 steps，表示刚应用过），不覆盖
-  if (parsePreview?.entry?._uid === current._uid && parsePreview?.steps?.length) {
-    return;
-  }
+  useEffect(() => {
+    if (!current) { setParsePreview(null); return; }
+    const assignments = current._parseAssignments || [];
+    if (assignments.length === 0) { setParsePreview(null); return; }
 
-  let cancelled = false;
-  (async () => {
-    try {
-      const configMap = getCfgMapRef.current(projectId);
-      const customTemplates = {
-        ...buildCustomTemplates(getCustomRef.current(projectId)),
-        ...buildScriptTemplates(scriptsRef.current),
-      };
-      const result = await applyAssignmentsToEntry(
-        current,
-        assignments,
-        configMap,
-        { steps: [] },
-        { preserveTemplates: true, customTemplates }
-      );
-      if (cancelled) return;
+    if (parsePreview?.entry?._uid === current._uid && parsePreview?.steps?.length) return;
 
-      // ⬇ 兼容两种返回值：新版返回 { entry }，旧版返回 { request }
-      const previewEntry = result.entry
-        || { ...current, request: result.request };
-
-      if (!previewEntry?.request) {
-        console.warn('[Workbench] 自动加载：previewEntry.request 缺失', result);
-        setParsePreview(null);
-        return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const configMap = getCfgMapRef.current(projectId);
+        const customTemplates = {
+          ...buildCustomTemplates(getCustomRef.current(projectId)),
+          ...buildScriptTemplates(scriptsRef.current),
+        };
+        const result = await applyAssignmentsToEntry(
+          current, assignments, configMap, { steps: [] },
+          { preserveTemplates: true, customTemplates }
+        );
+        if (cancelled) return;
+        const previewEntry = result.entry || { ...current, request: result.request };
+        if (!previewEntry?.request) { setParsePreview(null); return; }
+        setParsePreview({
+          entry: previewEntry,
+          chain: [], steps: [],
+          fieldPath: null, fieldLabel: null,
+          originalValue: null, parsedValue: null,
+          autoLoaded: true,
+        });
+      } catch (e) {
+        console.error('[Workbench] 自动加载预览失败:', e);
       }
-
-      console.log('[Workbench] 自动加载解析预览:', current._uid);
-      setParsePreview({
-        entry: previewEntry,
-        chain: [],
-        steps: [],
-        fieldPath: null,
-        fieldLabel: null,
-        originalValue: null,
-        parsedValue: null,
-        autoLoaded: true,
-      });
-    } catch (e) {
-      console.error('[Workbench] 自动加载解析预览失败:', e);
-    }
-  })();
-
-  return () => { cancelled = true; };
+    })();
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [current?._uid, assignmentsKey, projectId]);
+  }, [current?._uid, assignmentsKey, projectId]);
+
   const methods = useMemo(() => {
     const set = new Set(entries.map((e) => e.request?.method).filter(Boolean));
     return [{ value: 'ALL', label: '全部方法' }].concat([...set].map((m) => ({ value: m, label: m })));
@@ -237,23 +292,24 @@ useEffect(() => {
       } else {
         const existing = current._parseAssignments || [];
         const pathKey = JSON.stringify(result.fieldPath);
+        const newEntry = {
+          fieldPath: result.fieldPath,
+          jsonSubPath: result.jsonSubPath,
+          valueSources: result.valueSources,
+          joinMode: result.joinMode,
+          template: result.template,
+          chain: result.chain,
+        };
         newAssignments = existing.some((a) => JSON.stringify(a.fieldPath) === pathKey)
-          ? existing.map((a) => JSON.stringify(a.fieldPath) === pathKey
-              ? { ...a, chain: result.chain }
-              : a)
-          : [...existing, { fieldPath: result.fieldPath, chain: result.chain }];
+          ? existing.map((a) => JSON.stringify(a.fieldPath) === pathKey ? newEntry : a)
+          : [...existing, newEntry];
       }
 
-      setEntries((prev) =>
-        prev.map((e) =>
-          e._uid === current._uid ? { ...e, _parseAssignments: newAssignments } : e
-        )
-      );
+      setEntries((prev) => prev.map((e) =>
+        e._uid === current._uid ? { ...e, _parseAssignments: newAssignments } : e
+      ));
 
-      if (newAssignments.length === 0) {
-        setParsePreview(null);
-        return;
-      }
+      if (newAssignments.length === 0) { setParsePreview(null); return; }
 
       const configMap = getEffectiveConfigMap(projectId);
       const customTemplates = {
@@ -261,38 +317,44 @@ useEffect(() => {
         ...buildScriptTemplates(scripts),
       };
 
-      const targetAssignment = newAssignments.find(
+      const target = newAssignments.find(
         (a) => JSON.stringify(a.fieldPath) === JSON.stringify(result.fieldPath)
       );
-const result2 = await applyAssignmentsToEntry(
-  current,
-  targetAssignment ? [targetAssignment] : [],
-  configMap,
-  { steps: [] },
-  { preserveTemplates: true, customTemplates }
-);
 
-// ⬇ 兼容两种返回值
-const previewEntry = result2.entry
-  || { ...current, request: result2.request };
-
-setParsePreview({
-  entry: previewEntry,
-  chain: result.chain, steps: result.steps,
-  fieldPath: result.fieldPath, fieldLabel: result.fieldLabel,
-  originalValue: result.originalValue, parsedValue: result.parsedValue,
-});
+      const r = await applyAssignmentsToEntry(
+        current, target ? [target] : [], configMap, { steps: [] },
+        { preserveTemplates: true, customTemplates }
+      );
 
       setParsePreview({
-        entry: previewEntry,
-        chain: result.chain, steps: result.steps,
-        fieldPath: result.fieldPath, fieldLabel: result.fieldLabel,
-        originalValue: result.originalValue, parsedValue: result.parsedValue,
+        entry: r.entry || { ...current, request: r.request },
+        chain: result.chain || [],
+        steps: [],
+        fieldPath: result.fieldPath,
+        fieldLabel: result.fieldLabel,
+        originalValue: null,
+        parsedValue: null,
       });
     } catch (e) {
-      console.error('[RequestWorkbench] 应用解析失败:', e);
+      console.error('[Workbench] 应用失败:', e);
       message.error(String(e?.message || e));
     }
+  };
+
+  const handleRemoveAssignment = (assignment) => {
+    if (!current) return;
+    const newAssignments = (current._parseAssignments || []).filter(
+      (a) => JSON.stringify(a.fieldPath) !== JSON.stringify(assignment.fieldPath)
+    );
+    setEntries((prev) =>
+      prev.map((e) => e._uid === current._uid ? { ...e, _parseAssignments: newAssignments } : e)
+    );
+    message.success(`已删除字段 ${assignment.fieldPath.join('.')} 的配置`);
+    if (newAssignments.length === 0) setParsePreview(null);
+  };
+
+  const handleEditAssignment = (assignment) => {
+    setEditingAssignment(assignment);
   };
 
   const handleAddClick = () => {
@@ -301,7 +363,26 @@ setParsePreview({
     setSelectedUids(new Set());
   };
 
-  const renderRow = (entry) => {
+  const handleDragStart = (e, idx) => {
+    setDraggingIndex(idx);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(idx));
+  };
+  const handleDragOver = (e, idx) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dropIndex !== idx) setDropIndex(idx);
+  };
+  const handleDrop = (e, idx) => {
+    e.preventDefault();
+    const from = draggingIndex;
+    if (from != null && from !== idx && onReorder) onReorder(from, idx);
+    setDraggingIndex(null);
+    setDropIndex(null);
+  };
+  const handleDragEnd = () => { setDraggingIndex(null); setDropIndex(null); };
+
+  const renderRow = (entry, idx) => {
     const req = entry.request || {};
     const res = entry.response || {};
     const parts = parseUrlParts(req.url);
@@ -310,14 +391,19 @@ setParsePreview({
     const tags = entry.tags || [];
     const assignmentsCount = (entry._parseAssignments || []).length;
 
-    return (
+    const rowContent = (
       <div onClick={() => setCurrentUid(entry._uid)}
         style={{
           padding: '6px 10px', cursor: 'pointer', fontSize: 12,
           background: isCurrent ? '#e6f4ff' : 'transparent',
           borderBottom: '1px solid #f0f0f0',
+          opacity: draggingIndex === idx ? 0.4 : 1,
+          outline: (dropIndex === idx && draggingIndex !== idx) ? '2px dashed #1677ff' : 'none',
         }}>
         <Flex align="center" gap={6} style={{ minWidth: 0 }}>
+          {enableDrag && (
+            <HolderOutlined style={{ color: '#bfbfbf', cursor: 'grab', flexShrink: 0 }} />
+          )}
           {showSelection && (
             <Checkbox checked={isChecked}
               onChange={(e) => { e.stopPropagation(); toggleSelect(entry); }}
@@ -330,13 +416,22 @@ setParsePreview({
           <Text ellipsis style={{ width: 120, color: '#595959' }} title={parts.host}>{parts.host}</Text>
           <Text ellipsis style={{ flex: 1, minWidth: 0 }} title={parts.path}>{parts.path}</Text>
           {assignmentsCount > 0 && (
-            <Tag color="purple" style={{ margin: 0 }}>算法 ×{assignmentsCount}</Tag>
+            <ChainManagerPopover
+              entry={entry}
+              allTemplates={allTemplates}
+              onEdit={handleEditAssignment}
+              onRemove={handleRemoveAssignment}
+            >
+              <Tag color="purple" style={{ margin: 0, cursor: 'pointer' }}>
+                <ThunderboltOutlined style={{ marginRight: 2 }} />配置 ×{assignmentsCount}
+              </Tag>
+            </ChainManagerPopover>
           )}
           <Text type="secondary" style={{ flexShrink: 0, width: 60, textAlign: 'right' }}>
             {formatTime(entry.time)}
           </Text>
         </Flex>
-        <Flex align="center" gap={4} wrap style={{ marginTop: 4, paddingLeft: showSelection ? 24 : 0 }}>
+        <Flex align="center" gap={4} wrap style={{ marginTop: 4, paddingLeft: showSelection || enableDrag ? 24 : 0 }}>
           {tags.map((t) => (
             <Tag key={t.label} color={t.color} closable
               onClose={(e) => {
@@ -348,104 +443,145 @@ setParsePreview({
         </Flex>
       </div>
     );
+
+    if (!enableDrag) return <div key={entry._uid}>{rowContent}</div>;
+
+    return (
+      <div key={entry._uid}
+        draggable
+        onDragStart={(e) => handleDragStart(e, idx)}
+        onDragOver={(e) => handleDragOver(e, idx)}
+        onDrop={(e) => handleDrop(e, idx)}
+        onDragEnd={handleDragEnd}>
+        {rowContent}
+      </div>
+    );
   };
 
   const listyAvailable = typeof Listy === 'function' || (Listy && Listy.$$typeof);
   const hasEntries = entries.length > 0;
 
   return (
-    <Splitter style={{ height: '100%' }}>
-      <Splitter.Panel defaultSize="42%" min="25%" max="65%">
-        <Flex vertical style={{ height: '100%', background: '#fff' }}>
-          <Flex vertical gap={8}
-            style={{ padding: 10, borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
-            {headerTopExtra}
-            {headerExtra}
-            {hasEntries && (
-              <>
-                <Flex gap={6} wrap>
-                  <Input allowClear size="small" prefix={<SearchOutlined />}
-                    placeholder="搜索 URL / 方法 / MIME" style={{ flex: 1, minWidth: 140 }}
-                    value={keyword} onChange={(e) => setKeyword(e.target.value)} />
-                  <Select size="small" value={method} onChange={setMethod}
-                    options={methods} style={{ width: 90 }} />
-                </Flex>
-                <Flex justify="space-between" align="center" gap={6}>
-                  <Segmented size="small" value={statusRange} onChange={setStatusRange}
-                    options={[
-                      { value: 'ALL', label: '全部' }, { value: '2xx', label: '2xx' },
-                      { value: '3xx', label: '3xx' }, { value: '4xx', label: '4xx' },
-                      { value: '5xx', label: '5xx' },
-                    ]} />
-                  <Text type="secondary" style={{ fontSize: 11 }}>{filtered.length} 条</Text>
-                </Flex>
-                {(showSelection || showAddToProject) && (
-                  <Flex justify="space-between" align="center" gap={6}>
-                    {showSelection ? (
-                      <Checkbox checked={allChecked} indeterminate={someChecked && !allChecked}
-                        onChange={toggleSelectAll}>
-                        <Text style={{ fontSize: 12 }}>已选 {selectedUids.size}</Text>
-                      </Checkbox>
-                    ) : <span />}
-                    {showAddToProject && (
-                      <Button size="small" type="primary" icon={<PlusOutlined />}
-                        disabled={selectedUids.size === 0}
-                        onClick={handleAddClick}>添加到项目</Button>
-                    )}
+    <>
+      <Splitter style={{ height: '100%' }}>
+        <Splitter.Panel defaultSize="42%" min="25%" max="65%">
+          <Flex vertical style={{ height: '100%', background: '#fff' }}>
+            <Flex vertical gap={8}
+              style={{ padding: 10, borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
+              {headerTopExtra}
+              {headerExtra}
+              {hasEntries && (
+                <>
+                  <Flex gap={6} wrap>
+                    <Input allowClear size="small" prefix={<SearchOutlined />}
+                      placeholder="搜索 URL / 方法 / MIME" style={{ flex: 1, minWidth: 140 }}
+                      value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+                    <Select size="small" value={method} onChange={setMethod}
+                      options={methods} style={{ width: 90 }} />
                   </Flex>
-                )}
-              </>
-            )}
+                  <Flex justify="space-between" align="center" gap={6}>
+                    <Segmented size="small" value={statusRange} onChange={setStatusRange}
+                      options={[
+                        { value: 'ALL', label: '全部' }, { value: '2xx', label: '2xx' },
+                        { value: '3xx', label: '3xx' }, { value: '4xx', label: '4xx' },
+                        { value: '5xx', label: '5xx' },
+                      ]} />
+                    <Text type="secondary" style={{ fontSize: 11 }}>{filtered.length} 条</Text>
+                  </Flex>
+                  {(showSelection || showAddToProject) && (
+                    <Flex justify="space-between" align="center" gap={6}>
+                      {showSelection ? (
+                        <Checkbox checked={allChecked} indeterminate={someChecked && !allChecked}
+                          onChange={toggleSelectAll}>
+                          <Text style={{ fontSize: 12 }}>已选 {selectedUids.size}</Text>
+                        </Checkbox>
+                      ) : <span />}
+                      {showAddToProject && (
+                        <Button size="small" type="primary" icon={<PlusOutlined />}
+                          disabled={selectedUids.size === 0}
+                          onClick={handleAddClick}>添加到项目</Button>
+                      )}
+                    </Flex>
+                  )}
+                </>
+              )}
+            </Flex>
+
+            <div ref={listRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+              {!hasEntries ? (
+                emptyNode || (
+                  <Flex justify="center" align="center" style={{ height: '100%' }}>
+                    <Empty description="暂无请求" />
+                  </Flex>
+                )
+              ) : !listyAvailable ? (
+                <div style={{ height: '100%', overflow: 'auto' }}>
+                  {filtered.map((entry, i) => renderRow(entry, i))}
+                </div>
+              ) : listHeight > 0 ? (
+                <Listy virtual items={filtered} rowKey={(r) => r._uid}
+                  height={listHeight} itemRender={(entry) => renderRow(entry, entries.indexOf(entry))} />
+              ) : (
+                <Flex justify="center" align="center" style={{ height: '100%' }}><Spin /></Flex>
+              )}
+            </div>
           </Flex>
+        </Splitter.Panel>
 
-          <div ref={listRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
-            {!hasEntries ? (
-              emptyNode || (
+        <Splitter.Panel>
+          <Splitter orientation="vertical">
+            <Splitter.Panel defaultSize="55%" min="25%">
+              {current ? (
+                <RequestDetail
+                  entry={current} inline projectId={projectId}
+                  onParseResult={handleParseResult}
+                  activeKey={activeTabKey}
+                  onTabChange={setActiveTabKey}
+                />
+              ) : (
                 <Flex justify="center" align="center" style={{ height: '100%' }}>
-                  <Empty description="暂无请求" />
+                  <Empty description="从左侧选择一条请求查看详情" />
                 </Flex>
-              )
-            ) : !listyAvailable ? (
-              <div style={{ height: '100%', overflow: 'auto' }}>
-                {filtered.map((entry) => <div key={entry._uid}>{renderRow(entry)}</div>)}
-              </div>
-            ) : listHeight > 0 ? (
-              <Listy virtual items={filtered} rowKey={(r) => r._uid}
-                height={listHeight} itemRender={(entry) => renderRow(entry)} />
-            ) : (
-              <Flex justify="center" align="center" style={{ height: '100%' }}><Spin /></Flex>
-            )}
-          </div>
-        </Flex>
-      </Splitter.Panel>
-
-      <Splitter.Panel>
-        <Splitter orientation="vertical">
-          <Splitter.Panel defaultSize="55%" min="25%">
-            {current ? (
-              <RequestDetail
-                entry={current} inline projectId={projectId}
-                onParseResult={handleParseResult}
+              )}
+            </Splitter.Panel>
+            <Splitter.Panel>
+              <ParsePreviewPanel
+                parsed={parsePreview}
+                projectId={projectId}
+                onClose={() => setParsePreview(null)}
                 activeKey={activeTabKey}
                 onTabChange={setActiveTabKey}
               />
-            ) : (
-              <Flex justify="center" align="center" style={{ height: '100%' }}>
-                <Empty description="从左侧选择一条请求查看详情" />
-              </Flex>
-            )}
-          </Splitter.Panel>
-          <Splitter.Panel>
-            <ParsePreviewPanel
-              parsed={parsePreview}
-              projectId={projectId}
-              onClose={() => setParsePreview(null)}
-              activeKey={activeTabKey}
-              onTabChange={setActiveTabKey}
-            />
-          </Splitter.Panel>
-        </Splitter>
-      </Splitter.Panel>
-    </Splitter>
+            </Splitter.Panel>
+          </Splitter>
+        </Splitter.Panel>
+      </Splitter>
+
+      {editingAssignment && current && (
+        <ParserModal
+          open={!!editingAssignment}
+          onClose={() => setEditingAssignment(null)}
+          value={String(
+            (() => {
+              const keys = editingAssignment.fieldPath;
+              let cur = current;
+              for (const k of keys) { if (cur == null) return ''; cur = cur[k]; }
+              return cur ?? '';
+            })()
+          )}
+          fieldPath={editingAssignment.fieldPath}
+          fieldLabel={editingAssignment.fieldPath.join('.')}
+          onParseResult={async (result) => {
+            await handleParseResult(result);
+            setEditingAssignment(null);
+          }}
+          projectId={projectId}
+          initialChain={editingAssignment.chain || []}
+          initialSources={editingAssignment.valueSources || []}
+          initialJoin={{ joinMode: editingAssignment.joinMode, template: editingAssignment.template }}
+          initialJsonSubPath={editingAssignment.jsonSubPath || ''}
+        />
+      )}
+    </>
   );
 }

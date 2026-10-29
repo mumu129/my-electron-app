@@ -37,7 +37,6 @@ export function ProjectProvider({ children }) {
     setProjects((prev) =>
       prev.map((p) => (p.id === projectId ? { ...p, proxy: proxy || '' } : p))
     );
-    console.log('[ProjectStore] updateProjectProxy:', projectId, proxy);
   };
 
   const createGroup = (projectId, name) => {
@@ -139,6 +138,28 @@ export function ProjectProvider({ children }) {
     );
   };
 
+  // ⬇ 新增：请求组内请求拖拽排序
+  const reorderGroupRequests = (projectId, groupId, fromIndex, toIndex) => {
+    if (fromIndex === toIndex) return;
+    setProjects((prev) =>
+      prev.map((p) => {
+        if (p.id !== projectId) return p;
+        return {
+          ...p,
+          groups: p.groups.map((g) => {
+            if (g.id !== groupId) return g;
+            const requests = [...g.requests];
+            if (fromIndex < 0 || fromIndex >= requests.length) return g;
+            if (toIndex < 0 || toIndex >= requests.length) return g;
+            const [moved] = requests.splice(fromIndex, 1);
+            requests.splice(toIndex, 0, moved);
+            return { ...g, requests };
+          }),
+        };
+      })
+    );
+  };
+
   const updateRequestFields = (projectId, groupId, entryUid, fieldUpdates) => {
     if (!Array.isArray(fieldUpdates) || fieldUpdates.length === 0) return;
     setProjects((prev) =>
@@ -211,7 +232,7 @@ export function ProjectProvider({ children }) {
     <ProjectContext.Provider value={{
       projects, createProject, deleteProject, updateProjectProxy,
       createGroup, renameGroup, moveGroup, reorderGroups, deleteGroup,
-      addRequestsToGroup, updateGroupRequests,
+      addRequestsToGroup, updateGroupRequests, reorderGroupRequests,
       updateRequestFields, applyResponse, resetGroupRequests,
     }}>
       {children}

@@ -495,81 +495,86 @@ function normalizeChainItem(item) {
   return null;
 }
 
+/* ============ 主进程算法（lib / script） ============ */
+
+async function runLibFunction(key, input, cfg) {
+  // key 形如 lib:xxsdk3.2.min.js
+  if (!window.electronAPI?.lib?.run) return '（主进程未开放 lib.run）'
+  const fileName = key.slice(4)
+  if (!cfg?.fnName) return '（请先配置函数名）'
+  let args = {}
+  if (cfg.args) {
+    try { args = typeof cfg.args === 'string' ? JSON.parse(cfg.args) : cfg.args }
+    catch { return '（args 不是合法 JSON）' }
+  }
+  const r = await window.electronAPI.lib.run({ fileName, fnName: cfg.fnName, input: String(input ?? ''), config: args })
+  if (!r?.ok) return `（库调用失败：${r?.error || '未知'}）`
+  return r.value
+}
+
+async function runExternalScript(key, input, cfg, context) {
+  if (!window.electronAPI?.script?.run) return '（主进程未开放 script.run）'
+  const scriptName = key.slice(7) // 'script:'.length
+  // 从 localStorage 里拿脚本代码
+  let scripts = {}
+  try { scripts = JSON.parse(localStorage.getItem('har-scripts-v1') || '{}') } catch {}
+  const code = scripts[scriptName]?.code
+  if (!code) return `（脚本不存在：${scriptName}）`
+  const r = await window.electronAPI.script.run({
+    code,
+    input: String(input ?? ''),
+    ctx: { responses: context?.steps || [], currentStep: context?.currentStep, entry: context?.entry, fieldPath: context?.fieldPath },
+    config: cfg || {},
+  })
+  if (!r?.ok) return `（脚本失败：${r?.error || '未知'}）`
+  return r.value
+}
+
+function getLabel(key) {
+  if (key.startsWith('lib:')) return `库：${key.slice(4)}`
+  if (key.startsWith('script:')) return `脚本：${key.slice(7)}`
+  return PARSER_TEMPLATES[key]?.label || key
+}
+
 /**
  * 执行算法链
  * 兼容旧的 `main-process-script`（已从内置移除），把它的 config.code 当作动态脚本执行
  */
 export async function runParserChain(chain, input, configMap = {}, context = { steps: [] }, customTemplates = {}) {
-  let value = input;
-  const steps = [];
-
-  console.log('[Parser][chain] start, input=', input, 'chain=', chain,
-    'customTemplatesKeys=', Object.keys(customTemplates));
+  let value = input
+  const steps = []
 
   for (const rawItem of chain || []) {
-    const item = normalizeChainItem(rawItem);
-    if (!item) {
-      steps.push({ key: '?', label: '?', input: value, output: '（无效链项）' });
-      continue;
-    }
-    const key = item.key;
-    let tpl = PARSER_TEMPLATES[key] || customTemplates[key];
-    console.log('[Parser][chain] 查找算法', key, '→', tpl ? `找到（${tpl.label}）` : '未找到');
+    const item = normalizeChainItem(rawItem)
+    if (!item) { steps.push({ key: '?', label: '?', input: value, output: '（无效链项）' }); continue }
+    const key = item.key
+    const cfg = item.config != null ? item.config : configMap[key]
 
-    if (!tpl && key.startsWith('script:')) {
-      const scriptName = key.slice('script:'.length);
-      tpl = fallbackScriptTemplate(scriptName);
-      console.log('[Parser][chain] 兜底查找脚本', scriptName, '→', tpl ? '找到' : '未找到');
-    }
-
-    if (!tpl && key === 'main-process-script' && item.config?.code && window.electronAPI?.script) {
-      const scriptCode = item.config.code;
-      tpl = {
-        label: '主进程脚本（兼容旧数据）',
-        configFields: null,
-        fn: async (inp, _cfg, ctx) => {
-          const r = await window.electronAPI.script.run({
-            code: scriptCode,
-            input: String(inp ?? ''),
-            ctx: { responses: ctx?.steps || [], currentStep: ctx?.currentStep },
-            config: {},
-          });
-          if (!r?.ok) return `（脚本执行失败：${r?.error || '未知'}）`;
-          return r.value;
-        },
-      };
-    }
-
-    if (!tpl) {
-      steps.push({ key, label: key, input: value, output: `（未知算法：${key}）` });
-      value = `（未知算法：${key}）`;
-      continue;
-    }
-
-    const cfg = item.config != null ? item.config : configMap[key];
-    const hasConfigFields = Array.isArray(tpl.configFields) && tpl.configFields.length > 0;
-    let output;
-    if (hasConfigFields && !cfg) {
-      output = `（请先配置 ${tpl.label}）`;
-      console.log('[Parser][chain] 缺少配置', key, 'configFields=', tpl.configFields);
-    } else {
-      try {
-        console.log('[Parser][chain] 执行', key, 'input=', value, 'cfg=', cfg);
-        output = await tpl.fn(value, cfg, context);
-        console.log('[Parser][chain] 结果', key, '=>', output);
-      } catch (e) {
-        output = `（执行出错：${e.message || e}）`;
-        console.error('[Parser][chain] 执行抛错', key, e);
+    let output
+    try {
+      if (key.startsWith('lib:')) {
+        output = await runLibFunction(key, value, cfg)
+      } else if (key.startsWith('script:')) {
+        output = await runExternalScript(key, value, cfg, context)
+      } else {
+        const tpl = PARSER_TEMPLATES[key] || customTemplates[key]
+        if (!tpl) {
+          output = `（未知算法：${key}）`
+        } else if (Array.isArray(tpl.configFields) && tpl.configFields.length > 0 && !cfg) {
+          output = `（请先配置 ${tpl.label}）`
+        } else {
+          output = await tpl.fn(value, cfg, context)
+        }
       }
+    } catch (e) {
+      output = `（出错：${e.message || e}）`
     }
-    steps.push({ key, label: tpl.label, input: value, output });
-    value = output;
+
+    steps.push({ key, label: getLabel(key), input: value, output })
+    value = output
   }
-
-  console.log('[Parser][chain] done, finalValue=', value);
-  return { finalValue: value, steps };
+  return { finalValue: value, steps }
 }
-
 function fallbackScriptTemplate(scriptName) {
   try {
     const raw = localStorage.getItem('har-scripts-v1');

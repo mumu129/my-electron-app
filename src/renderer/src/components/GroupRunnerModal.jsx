@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Modal, Flex, Button, Tag, Switch, InputNumber, Divider,
+  Modal, Flex, Button, Tag, Switch, InputNumber, Divider, Select,
   Typography, Alert, Empty, App as AntApp, Tooltip,
 } from 'antd';
 import {
@@ -38,7 +38,7 @@ async function sendRequest(entry, proxy) {
   const headers = buildHeadersFromEntry(req);
   const body = buildBodyFromEntry(req, method);
   const started = performance.now();
-  console.log('[SEND]', { url: req.url, method, headers, body, proxy });
+  console.log('[SEND]', { url: req.url, method, proxy });
 
   if (window.electronAPI?.httpRequest) {
     const r = await window.electronAPI.httpRequest({ url: req.url, method, headers, body, proxy });
@@ -55,6 +55,8 @@ async function sendRequest(entry, proxy) {
   };
 }
 
+const UNIT_MS = { s: 1000, min: 60 * 1000, h: 60 * 60 * 1000 };
+
 export default function GroupRunnerModal({
   open, onClose, groupName, requests, projectId, projectProxy,
   onUpdateRequestFields, onApplyResponse, onReset,
@@ -66,7 +68,8 @@ export default function GroupRunnerModal({
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState([]);
   const [loop, setLoop] = useState(false);
-  const [intervalSec, setIntervalSec] = useState(60);
+  const [intervalValue, setIntervalValue] = useState(1);
+  const [intervalUnit, setIntervalUnit] = useState('min');
   const [stopOnError, setStopOnError] = useState(true);
   const [currentRound, setCurrentRound] = useState(0);
   const [expandedStep, setExpandedStep] = useState(null);
@@ -134,42 +137,39 @@ export default function GroupRunnerModal({
 
       try {
         context.currentStep = i;
-        const { request: sentRequest, writableUpdates } = await applyAssignmentsToEntry(
-          entry,
-          entry._parseAssignments || [],
-          configMapRef.current,
-          context,
+        const result = await applyAssignmentsToEntry(
+          entry, entry._parseAssignments || [], configMapRef.current, context,
           { customTemplates: customTemplatesRef.current }
         );
-
-        if (writableUpdates.length > 0) {
-          onUpdateRequestFields?.(entry._uid, writableUpdates);
+        const sentEntry = result.entry || { ...entry, request: result.request };
+        if (result.writableUpdates?.length > 0) {
+          onUpdateRequestFields?.(entry._uid, result.writableUpdates);
         }
 
-        updateStep(i, { sentUrl: sentRequest.url });
+        updateStep(i, { sentUrl: sentEntry.request?.url });
+        const response = await sendRequest(sentEntry, proxyRef.current);
 
-        // ⬇ 传代理
-        const result = await sendRequest({ ...entry, request: sentRequest }, proxyRef.current);
-        context.steps[i] = { index: i, response: result };
+        // ⬇ 存 entry 和 response，供后续请求通过 atRequest/atResponse/prevResponse 读取
+        context.steps[i] = { index: i, response, entry: sentEntry };
 
         const nextResponse = {
-          status: result.status,
-          statusText: result.statusText,
-          headers: result.headers || [],
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers || [],
           content: {
-            text: result.body || '',
-            size: new Blob([result.body || '']).size,
+            text: response.body || '',
+            size: new Blob([response.body || '']).size,
           },
         };
         onApplyResponse?.(entry._uid, nextResponse);
 
-        updateStep(i, { status: 'success', response: result, elapsed: result.time });
+        updateStep(i, { status: 'success', response, elapsed: response.time });
 
-        if (stopOnError && result.status >= 400) {
+        if (stopOnError && response.status >= 400) {
           setSteps((prev) => prev.map((s, idx) =>
             idx > i && s.status === 'pending' ? { ...s, status: 'skipped' } : s
           ));
-          message.warning(`请求 #${i + 1} 返回 ${result.status}，已中止`);
+          message.warning(`请求 #${i + 1} 返回 ${response.status}，已中止`);
           return { aborted: true };
         }
       } catch (e) {
@@ -184,6 +184,8 @@ export default function GroupRunnerModal({
     return { aborted: false };
   };
 
+  const getIntervalMs = () => (UNIT_MS[intervalUnit] || 1000) * Math.max(1, intervalValue);
+
   const startLoop = async () => {
     stopRef.current = false;
     setRunning(true);
@@ -194,10 +196,12 @@ export default function GroupRunnerModal({
       if (stopRef.current) { setRunning(false); return; }
       if (!loop) { setRunning(false); return; }
       if (aborted && !loop) { setRunning(false); return; }
+      const ms = getIntervalMs();
+      console.log(`[GroupRunner] 下一轮将在 ${ms}ms 后开始`);
       loopTimerRef.current = setTimeout(() => {
         if (!stopRef.current) loopFn();
         else setRunning(false);
-      }, intervalSec * 1000);
+      }, ms);
     };
     await loopFn();
   };
@@ -237,7 +241,7 @@ export default function GroupRunnerModal({
           <Tag>{requestCount} 条</Tag>
           {currentRound > 0 && <Tag color="processing">第 {currentRound} 轮</Tag>}
           {projectProxy && (
-            <Tooltip title={`发送时使用代理：${projectProxy}`}>
+            <Tooltip title={`使用代理：${projectProxy}`}>
               <Tag color="blue" icon={<GlobalOutlined />}>{projectProxy}</Tag>
             </Tooltip>
           )}
@@ -256,12 +260,27 @@ export default function GroupRunnerModal({
         <Divider type="vertical" />
         <AntText style={{ fontSize: 12 }}>循环执行</AntText>
         <Switch size="small" checked={loop} onChange={setLoop} disabled={running} />
-        <AntText style={{ fontSize: 12 }}>间隔</AntText>
-        <InputNumber size="small" min={1} max={86400}
-          value={intervalSec}
-          onChange={(v) => setIntervalSec(v || 1)}
+        <AntText style={{ fontSize: 12 }}>每隔</AntText>
+        <InputNumber
+          size="small" min={1} max={9999}
+          value={intervalValue}
+          onChange={(v) => setIntervalValue(v || 1)}
           disabled={running}
-          addonAfter="秒" style={{ width: 120 }} />
+          style={{ width: 70 }}
+        />
+        <Select
+          size="small"
+          value={intervalUnit}
+          onChange={setIntervalUnit}
+          disabled={running}
+          options={[
+            { value: 's', label: '秒' },
+            { value: 'min', label: '分钟' },
+            { value: 'h', label: '小时' },
+          ]}
+          style={{ width: 80 }}
+        />
+        <AntText style={{ fontSize: 12 }}>再执行一轮</AntText>
         <Divider type="vertical" />
         <AntText style={{ fontSize: 12 }}>失败即中止</AntText>
         <Switch size="small" checked={stopOnError} onChange={setStopOnError} disabled={running} />
@@ -275,7 +294,8 @@ export default function GroupRunnerModal({
         description={
           <div style={{ fontSize: 12 }}>
             每次发送前会基于请求当前值重新应用算法链。
-            发送成功后把解析值写回请求、把响应写回请求组。下次发送时基于新值再次应用算法。
+            发送成功后把解析值写回请求、把响应写回请求组。
+            若开启循环，每 {intervalValue} {intervalUnit === 's' ? '秒' : intervalUnit === 'min' ? '分钟' : '小时'} 执行一轮。
             {projectProxy && <div style={{ marginTop: 4 }}>使用代理：<code>{projectProxy}</code></div>}
           </div>
         }
