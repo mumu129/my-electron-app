@@ -1,16 +1,10 @@
 export function parseHar(text) {
-  console.log('[HAR][parseHar] 输入长度:', text?.length);
   let har;
-  try {
-    har = JSON.parse(text);
-  } catch (e) {
-    console.error('[HAR][parseHar] JSON 解析失败:', e);
-    throw new Error('不是合法的 JSON 文件');
-  }
+  try { har = JSON.parse(text); }
+  catch { throw new Error('不是合法的 JSON 文件'); }
   if (!har || !har.log || !Array.isArray(har.log.entries)) {
     throw new Error('不是合法的 HAR 文件（缺少 log.entries）');
   }
-  console.log('[HAR][parseHar] entries =', har.log.entries.length);
   return har;
 }
 
@@ -26,8 +20,7 @@ export function decodeContent(content = {}) {
       const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
       return {
         text: new TextDecoder('utf-8', { fatal: false }).decode(bytes),
-        isImage: false,
-        isBinary: false,
+        isImage: false, isBinary: false,
       };
     } catch {
       return { text: '（二进制内容，无法预览）', isImage: false, isBinary: true };
@@ -102,7 +95,6 @@ export function genUid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** 深拷贝并替换字段值，path 支持数组或点分隔字符串 */
 export function setPath(obj, path, value) {
   const keys = Array.isArray(path) ? path : String(path).split('.');
   const clone = typeof structuredClone === 'function'
@@ -112,4 +104,44 @@ export function setPath(obj, path, value) {
   for (let i = 0; i < keys.length - 1; i++) cur = cur[keys[i]];
   cur[keys[keys.length - 1]] = value;
   return clone;
+}
+
+// ⬇⬇⬇ 新增：applyAssignments 依赖这两个 ⬇⬇⬇
+export function getPath(obj, path) {
+  const keys = Array.isArray(path) ? path : String(path).split('.');
+  let cur = obj;
+  for (const k of keys) {
+    if (cur == null) return undefined;
+    cur = cur[k];
+  }
+  return cur;
+}
+
+export function deepClone(obj) {
+  if (typeof structuredClone === 'function') return structuredClone(obj);
+  return JSON.parse(JSON.stringify(obj));
+}
+// ⬆⬆⬆ 新增结束 ⬆⬆⬆
+
+export function rebuildUrlFromQuery(req) {
+  const original = req?.url || '';
+  const qs = req?.queryString;
+  if (!Array.isArray(qs) || qs.length === 0) return original;
+  try {
+    const u = new URL(original);
+    const params = new URLSearchParams();
+    qs.forEach((q) => {
+      if (q && q.name != null) params.append(q.name, q.value != null ? String(q.value) : '');
+    });
+    const search = params.toString();
+    u.search = search ? `?${search}` : '';
+    return u.toString();
+  } catch {
+    const base = original.split('?')[0].split('#')[0];
+    const search = qs
+      .filter((q) => q && q.name != null)
+      .map((q) => `${encodeURIComponent(q.name)}=${encodeURIComponent(q.value ?? '')}`)
+      .join('&');
+    return search ? `${base}?${search}` : base;
+  }
 }

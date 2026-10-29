@@ -3,13 +3,14 @@ import { App as AntApp, Breadcrumb, Layout, Menu, theme } from 'antd';
 import {
   FileTextOutlined, ProjectOutlined, ExperimentOutlined,
   PlusOutlined, HistoryOutlined, SettingOutlined,
-  GlobalOutlined, DeploymentUnitOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons';
 import ErrorBoundary from './components/ErrorBoundary';
 import HarViewer from './components/HarViewer';
 import ProjectNewPage from './pages/ProjectNewPage';
 import ProjectHistoryPage from './pages/ProjectHistoryPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
+import ProjectSettingsPage from './pages/ProjectSettingsPage';
 import GlobalAlgorithmPage from './pages/GlobalAlgorithmPage';
 import { ProjectProvider } from './store/projectStore';
 import { AlgorithmProvider } from './store/algorithmStore';
@@ -35,7 +36,6 @@ const items = [
       type: 'group', label: '算法配置',
       children: [
         { key: 'algorithm-global', label: '全局算法', icon: <GlobalOutlined /> },
-        { key: 'algorithm-project', label: '项目算法', icon: <DeploymentUnitOutlined /> },
       ],
     }],
   },
@@ -47,13 +47,11 @@ const BREADCRUMBS = {
   'project-history': [{ title: '项目' }, { title: '历史项目' }],
   'project-settings': [{ title: '项目' }, { title: '项目设置' }],
   'algorithm-global': [{ title: '算法' }, { title: '全局算法' }],
-  'algorithm-project': [{ title: '算法' }, { title: '项目算法' }],
 };
 
 const LABELS = {
   'project-settings': '项目设置',
   'algorithm-global': '全局算法',
-  'algorithm-project': '项目算法',
 };
 
 function Placeholder({ title }) {
@@ -101,6 +99,7 @@ function AppInner() {
       case 'project-new': return <ProjectNewPage />;
       case 'project-history':
         return <ProjectHistoryPage onOpenProject={(id) => setViewingProjectId(id)} />;
+      case 'project-settings': return <ProjectSettingsPage />;
       case 'algorithm-global': return <GlobalAlgorithmPage />;
       default: return <Placeholder title={LABELS[current] || current} />;
     }
@@ -144,6 +143,7 @@ function AppInner() {
 
 export default function App() {
   return (
+    
     <AntApp>
       <AlgorithmProvider>
         <ProjectProvider>
@@ -151,5 +151,6 @@ export default function App() {
         </ProjectProvider>
       </AlgorithmProvider>
     </AntApp>
+   
   );
 }

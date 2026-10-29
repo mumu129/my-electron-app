@@ -3,10 +3,12 @@ import {
   Flex, Typography, Button, Tag, Empty, App as AntApp, Alert,
 } from 'antd';
 import {
-  CloseOutlined, CopyOutlined, ThunderboltOutlined, SendOutlined, UpOutlined, DownOutlined,
+  CloseOutlined, CopyOutlined, ThunderboltOutlined, SendOutlined,
+  UpOutlined, DownOutlined,
 } from '@ant-design/icons';
 import RequestDetail from './RequestDetail';
 import { formatBytes, statusColor } from '../utils/har';
+import { buildHeadersFromEntry, buildBodyFromEntry } from '../utils/httpShared';
 
 const { Text } = Typography;
 
@@ -16,52 +18,25 @@ function cleanEntry(entry) {
   return rest;
 }
 
-const BLACKLIST_HEADERS = new Set([
-  'host', 'content-length', 'connection', 'accept-encoding', 'content-encoding',
-  'transfer-encoding', 'upgrade', 'te', 'trailer', 'proxy-connection',
-  'referer', 'origin', 'cookie',
-]);
-
 async function doSend(entry) {
   const req = entry.request || {};
-  const start = performance.now();
-
-  const headers = {};
-  (req.headers || []).forEach((h) => {
-    if (!h?.name) return;
-    if (h.name.startsWith(':')) return;
-    if (BLACKLIST_HEADERS.has(h.name.toLowerCase())) return;
-    headers[h.name] = h.value;
-  });
-
-  let body;
   const method = (req.method || 'GET').toUpperCase();
-  const isBodyLess = method === 'GET' || method === 'HEAD';
-  if (!isBodyLess) {
-    if (req.postData?.text) body = req.postData.text;
-    else if (Array.isArray(req.postData?.params)) {
-      body = req.postData.params
-        .map((p) => `${encodeURIComponent(p.name || '')}=${encodeURIComponent(p.value || '')}`)
-        .join('&');
-    }
-  }
-
+  const headers = buildHeadersFromEntry(req);
+  const body = buildBodyFromEntry(req, method);
   const payload = { url: req.url, method, headers, body };
 
-  // 优先走 Electron 主进程代理（避免 CORS），没接入时降级 fetch
+  const started = performance.now();
   if (window.electronAPI?.httpRequest) {
     const result = await window.electronAPI.httpRequest(payload);
-    const text = result.body || '';
     return {
       status: result.status,
       statusText: result.statusText,
       headers: result.headers || [],
-      body: text,
-      time: Math.round(performance.now() - start),
-      size: new Blob([text]).size,
+      body: result.body || '',
+      time: result.time || Math.round(performance.now() - started),
+      size: new Blob([result.body || '']).size,
     };
   }
-
   const res = await fetch(req.url, { method, headers, body });
   const text = await res.text();
   return {
@@ -69,12 +44,12 @@ async function doSend(entry) {
     statusText: res.statusText,
     headers: [...res.headers.entries()].map(([k, v]) => ({ name: k, value: v })),
     body: text,
-    time: Math.round(performance.now() - start),
+    time: Math.round(performance.now() - started),
     size: new Blob([text]).size,
   };
 }
 
-export default function ParsePreviewPanel({ parsed, onClose }) {
+export default function ParsePreviewPanel({ parsed, onClose, projectId }) {
   const { message } = AntApp.useApp();
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState(null);
@@ -128,7 +103,6 @@ export default function ParsePreviewPanel({ parsed, onClose }) {
 
   return (
     <Flex vertical style={{ height: '100%', background: '#fff', borderTop: '1px solid #f0f0f0' }}>
-      {/* 顶部：链路信息 + 复制 / 关闭 */}
       <Flex align="center" gap={6} wrap
         style={{ padding: '8px 12px', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
         <ThunderboltOutlined style={{ color: '#1677ff' }} />
@@ -144,24 +118,14 @@ export default function ParsePreviewPanel({ parsed, onClose }) {
         <Button size="small" type="text" icon={<CloseOutlined />} onClick={onClose} />
       </Flex>
 
-      {/* 中部：与上方请求详情一致的 Tabs 展示（只读） */}
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        <RequestDetail
-          entry={entry}
-          inline
-          readonly
-          hideHeader
-          tabsKey={tabsKey}
-        />
+        <RequestDetail entry={entry} inline readonly hideHeader tabsKey={tabsKey} projectId={projectId} />
       </div>
 
-      {/* 底部：发送已解析请求 */}
       <div style={{ flexShrink: 0, borderTop: '1px solid #f0f0f0', background: '#fafafa' }}>
         <Flex align="center" gap={8} style={{ padding: '8px 12px' }}>
           <Tag style={{ margin: 0 }}>{req.method}</Tag>
-          <Text ellipsis style={{ flex: 1, minWidth: 0, fontSize: 12 }} title={req.url}>
-            {req.url}
-          </Text>
+          <Text ellipsis style={{ flex: 1, minWidth: 0, fontSize: 12 }} title={req.url}>{req.url}</Text>
           <Button size="small"
             icon={sendExpanded ? <UpOutlined /> : <DownOutlined />}
             onClick={() => setSendExpanded((v) => !v)}>
@@ -171,7 +135,6 @@ export default function ParsePreviewPanel({ parsed, onClose }) {
             发送此请求
           </Button>
         </Flex>
-
         {sendExpanded && (
           <div style={{ maxHeight: 220, overflow: 'auto', padding: '0 12px 10px' }}>
             {!sendResult && !sending && (

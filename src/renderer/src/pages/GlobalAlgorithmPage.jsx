@@ -9,25 +9,25 @@ import { useAlgorithms } from '../store/algorithmStore';
 
 const { Text } = Typography;
 
-function ConfigForm({ algorithmKey, onClose }) {
-  const { algorithms, updateAlgorithm, removeAlgorithm } = useAlgorithms();
+function GlobalConfigForm({ algorithmKey, onClose }) {
+  const { algorithms, updateGlobalAlgorithm, removeGlobalAlgorithm } = useAlgorithms();
   const { message } = AntApp.useApp();
   const [form] = Form.useForm();
   const tpl = PARSER_TEMPLATES[algorithmKey];
-  const existing = algorithms[algorithmKey]?.config || {};
+  const existing = algorithms.global?.[algorithmKey]?.config || {};
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
-      updateAlgorithm(algorithmKey, { enabled: true, config: values });
+      updateGlobalAlgorithm(algorithmKey, { enabled: true, config: values });
       message.success(`${tpl.label} 已配置`);
       onClose?.();
-    } catch (e) { console.error('[ConfigForm] 保存失败:', e); }
+    } catch (e) { console.error(e); }
   };
 
   const handleClear = () => {
-    removeAlgorithm(algorithmKey);
-    message.success(`已清除 ${tpl.label} 配置`);
+    removeGlobalAlgorithm(algorithmKey);
+    message.success(`已清除 ${tpl.label} 全局配置`);
     onClose?.();
   };
 
@@ -35,15 +35,8 @@ function ConfigForm({ algorithmKey, onClose }) {
     <div style={{ width: 400 }}>
       <Form form={form} layout="vertical" initialValues={existing} size="small">
         {tpl.configFields.map((f) => (
-          <Form.Item
-            key={f.name}
-            name={f.name}
-            label={f.label}
-            rules={f.required ? [{ required: true, message: '必填' }] : []}
-          >
-            {f.multiline
-              ? <Input.TextArea rows={3} placeholder="粘贴 Base64" />
-              : <Input placeholder="粘贴 Base64" />}
+          <Form.Item key={f.name} name={f.name} label={f.label}>
+            {f.multiline ? <Input.TextArea rows={3} /> : <Input />}
           </Form.Item>
         ))}
       </Form>
@@ -76,8 +69,7 @@ export default function GlobalAlgorithmPage() {
     return result;
   }, []);
 
-  const groupTabs = Object.entries(PARSER_GROUPS).map(([k, label]) => ({ key: k, label }));
-
+  const groups = Object.entries(PARSER_GROUPS);
   const currentList = byGroup[activeGroup] || [];
 
   return (
@@ -85,21 +77,16 @@ export default function GlobalAlgorithmPage() {
       <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
         <Text strong style={{ fontSize: 16 }}>全局算法</Text>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          需配置的算法请填写密钥后保存，配置会持久化到本地
+          全局配置作为默认值，项目可覆盖
         </Text>
       </Flex>
       <Divider style={{ margin: '8px 0 12px' }} />
 
       <Flex gap={6} style={{ marginBottom: 12 }} wrap>
-        {groupTabs.map((t) => (
-          <Button
-            key={t.key}
-            size="small"
-            type={activeGroup === t.key ? 'primary' : 'default'}
-            onClick={() => setActiveGroup(t.key)}
-          >
-            {t.label}
-          </Button>
+        {groups.map(([g, label]) => (
+          <Button key={g} size="small"
+            type={activeGroup === g ? 'primary' : 'default'}
+            onClick={() => setActiveGroup(g)}>{label}</Button>
         ))}
       </Flex>
 
@@ -108,7 +95,7 @@ export default function GlobalAlgorithmPage() {
       ) : (
         <Row gutter={[16, 16]}>
           {currentList.map(([key, tpl]) => {
-            const state = algorithms[key];
+            const state = algorithms.global?.[key];
             const configured = !tpl.configFields || !!state?.config;
             return (
               <Col key={key} xs={24} sm={12} md={8} lg={6}>
@@ -123,14 +110,12 @@ export default function GlobalAlgorithmPage() {
                         : <Tag color="warning">待配置</Tag>}
                     </Flex>
                   }
-                  extra={tpl.configFields ? <ConfigForm algorithmKey={key} onClose={() => {}} /> : null}
+                  extra={tpl.configFields ? <GlobalConfigForm algorithmKey={key} onClose={() => {}} /> : null}
                 >
                   <Flex vertical gap={4}>
+                    <Text type="secondary" style={{ fontSize: 11 }}>分组：{PARSER_GROUPS[tpl.group]}</Text>
                     <Text type="secondary" style={{ fontSize: 11 }}>
-                      分组：{PARSER_GROUPS[tpl.group]}
-                    </Text>
-                    <Text type="secondary" style={{ fontSize: 11 }}>
-                      需配置：{tpl.configFields ? `是（${tpl.configFields.map(f => f.name).join(' / ')}）` : '否'}
+                      需配置：{tpl.configFields ? '是' : '否'}
                     </Text>
                     {state?.config && (
                       <Text style={{ fontSize: 11, color: '#52c41a' }}>已保存配置 ✓</Text>

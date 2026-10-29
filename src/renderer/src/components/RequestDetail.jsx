@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Drawer, Tabs, Descriptions, Table, Typography, Empty, Tag, Space, Button, App,
-  Flex, Modal, Divider, Input,
+  Flex, Modal, Divider,
 } from 'antd';
 import {
   CopyOutlined, ThunderboltOutlined, PlusOutlined, ArrowUpOutlined,
   ArrowDownOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import {
-  decodeContent, prettyJSON, formatBytes, formatTime, formatStarted, statusColor,
+  decodeContent, formatBytes, formatTime, formatStarted, statusColor,
 } from '../utils/har';
 import { PARSER_TEMPLATES, PARSER_GROUPS, runParserChain } from '../utils/parsers';
 import { useAlgorithms } from '../store/algorithmStore';
@@ -25,13 +25,17 @@ function PreBlock({ children, maxHeight = '58vh' }) {
   );
 }
 
-/* ============ 解析弹窗：支持多算法叠加 ============ */
-function ParserModal({ open, onClose, value, fieldPath, fieldLabel, onParseResult }) {
-  const { configMap } = useAlgorithms();
+function ParserModal({ open, onClose, value, fieldPath, fieldLabel, onParseResult, projectId }) {
+  const { getEffectiveConfigMap } = useAlgorithms();
   const { message } = App.useApp();
   const [chain, setChain] = useState([]);
   const [result, setResult] = useState(null);
   const [running, setRunning] = useState(false);
+
+  const configMap = useMemo(
+    () => getEffectiveConfigMap(projectId),
+    [getEffectiveConfigMap, projectId]
+  );
 
   useEffect(() => {
     if (open) { setChain([]); setResult(null); }
@@ -45,14 +49,8 @@ function ParserModal({ open, onClose, value, fieldPath, fieldLabel, onParseResul
     return m;
   }, []);
 
-  const add = (k) => {
-    setChain((prev) => [...prev, k]);
-    setResult(null);
-  };
-  const remove = (i) => {
-    setChain((prev) => prev.filter((_, idx) => idx !== i));
-    setResult(null);
-  };
+  const add = (k) => { setChain((prev) => [...prev, k]); setResult(null); };
+  const remove = (i) => { setChain((prev) => prev.filter((_, idx) => idx !== i)); setResult(null); };
   const move = (i, dir) => {
     setChain((prev) => {
       const next = [...prev];
@@ -97,13 +95,11 @@ function ParserModal({ open, onClose, value, fieldPath, fieldLabel, onParseResul
       destroyOnHidden
     >
       <Flex gap={16} style={{ minHeight: 260 }}>
-        {/* 左：原始值 */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>原始值</Text>
           <PreBlock maxHeight="26vh">{value}</PreBlock>
         </div>
 
-        {/* 右：链路编辑 + 算法选择 */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             解析链路（点击下方算法依次加入，用上下按钮调整顺序）
@@ -191,7 +187,7 @@ function ParserModal({ open, onClose, value, fieldPath, fieldLabel, onParseResul
   );
 }
 
-function ParserButton({ value, fieldPath, fieldLabel, onParseResult }) {
+function ParserButton({ value, fieldPath, fieldLabel, onParseResult, projectId }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -209,12 +205,13 @@ function ParserButton({ value, fieldPath, fieldLabel, onParseResult }) {
         fieldPath={fieldPath}
         fieldLabel={fieldLabel}
         onParseResult={onParseResult}
+        projectId={projectId}
       />
     </>
   );
 }
 
-function HeaderTable({ headers, emptyText = '无', scope, onParseResult, readonly }) {
+function HeaderTable({ headers, emptyText = '无', scope, onParseResult, readonly, projectId }) {
   const dataSource = useMemo(
     () => (headers || []).map((h, i) => ({ ...h, key: `${h.name}-${i}`, _index: i })),
     [headers]
@@ -241,6 +238,7 @@ function HeaderTable({ headers, emptyText = '无', scope, onParseResult, readonl
                   fieldLabel={rec.name}
                   fieldPath={[...scope, rec._index, 'value']}
                   onParseResult={onParseResult}
+                  projectId={projectId}
                 />
               )}
             </Flex>
@@ -251,7 +249,7 @@ function HeaderTable({ headers, emptyText = '无', scope, onParseResult, readonl
   );
 }
 
-function General({ entry, onParseResult, readonly }) {
+function General({ entry, onParseResult, readonly, projectId }) {
   const req = entry.request || {};
   const res = entry.response || {};
   return (
@@ -261,7 +259,8 @@ function General({ entry, onParseResult, readonly }) {
           <Text copyable style={{ wordBreak: 'break-all', flex: 1 }}>{req.url}</Text>
           {!readonly && req.url && (
             <ParserButton value={req.url} fieldLabel="URL"
-              fieldPath={['request', 'url']} onParseResult={onParseResult} />
+              fieldPath={['request', 'url']} onParseResult={onParseResult}
+              projectId={projectId} />
           )}
         </Flex>
       </Descriptions.Item>
@@ -279,7 +278,7 @@ function General({ entry, onParseResult, readonly }) {
   );
 }
 
-function RawBlockWithParser({ title, value, fieldPath, fieldLabel, onParseResult, readonly }) {
+function RawBlockWithParser({ title, value, fieldPath, fieldLabel, onParseResult, readonly, projectId }) {
   if (!value) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={`无${title}`} />;
   return (
     <Flex vertical style={{ width: '100%' }}>
@@ -287,7 +286,7 @@ function RawBlockWithParser({ title, value, fieldPath, fieldLabel, onParseResult
         <Text type="secondary" style={{ fontSize: 12 }}>{title}</Text>
         {!readonly && (
           <ParserButton value={value} fieldLabel={fieldLabel}
-            fieldPath={fieldPath} onParseResult={onParseResult} />
+            fieldPath={fieldPath} onParseResult={onParseResult} projectId={projectId} />
         )}
       </Flex>
       <PreBlock>{value}</PreBlock>
@@ -295,7 +294,7 @@ function RawBlockWithParser({ title, value, fieldPath, fieldLabel, onParseResult
   );
 }
 
-function RequestPayload({ postData, onParseResult, readonly }) {
+function RequestPayload({ postData, onParseResult, readonly, projectId }) {
   if (!postData) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无请求体" />;
   const { mimeType = '', text = '', params } = postData;
   const isForm = mimeType.includes('x-www-form-urlencoded') && Array.isArray(params);
@@ -306,19 +305,20 @@ function RequestPayload({ postData, onParseResult, readonly }) {
       </Descriptions>
       {isForm ? (
         <HeaderTable headers={params.map((p) => ({ name: p.name, value: p.value }))}
-          scope={['request', 'postData', 'params']} onParseResult={onParseResult} readonly={readonly} />
+          scope={['request', 'postData', 'params']} onParseResult={onParseResult}
+          readonly={readonly} projectId={projectId} />
       ) : (
         <RawBlockWithParser
           title="请求体原始文本" value={text}
           fieldPath={['request', 'postData', 'text']} fieldLabel="请求体"
-          onParseResult={onParseResult} readonly={readonly}
+          onParseResult={onParseResult} readonly={readonly} projectId={projectId}
         />
       )}
     </Flex>
   );
 }
 
-function ResponseBody({ content, onParseResult, readonly }) {
+function ResponseBody({ content, onParseResult, readonly, projectId }) {
   const decoded = decodeContent(content);
   if (!content || !content.text) {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无响应体" />;
@@ -335,7 +335,7 @@ function ResponseBody({ content, onParseResult, readonly }) {
     <RawBlockWithParser
       title="响应体原始文本" value={decoded.text}
       fieldPath={['response', 'content', 'text']} fieldLabel="响应体"
-      onParseResult={onParseResult} readonly={readonly}
+      onParseResult={onParseResult} readonly={readonly} projectId={projectId}
     />
   );
 }
@@ -357,7 +357,7 @@ function Timings({ entry }) {
 
 export default function RequestDetail({
   entry, open, onClose, inline = false, onParseResult,
-  readonly = false, hideHeader = false, tabsKey,
+  readonly = false, hideHeader = false, tabsKey, projectId,
 }) {
   const { message } = App.useApp();
   if (!entry) return null;
@@ -366,30 +366,34 @@ export default function RequestDetail({
 
   const items = [
     { key: 'general', label: '概览',
-      children: <General entry={entry} onParseResult={onParseResult} readonly={readonly} /> },
+      children: <General entry={entry} onParseResult={onParseResult}
+        readonly={readonly} projectId={projectId} /> },
     { key: 'query', label: 'Query',
       children: <HeaderTable headers={req.queryString} emptyText="无 Query 参数"
-        scope={['request', 'queryString']} onParseResult={onParseResult} readonly={readonly} /> },
+        scope={['request', 'queryString']} onParseResult={onParseResult}
+        readonly={readonly} projectId={projectId} /> },
     { key: 'reqHeaders', label: '请求头',
       children: <HeaderTable headers={req.headers} scope={['request', 'headers']}
-        onParseResult={onParseResult} readonly={readonly} /> },
+        onParseResult={onParseResult} readonly={readonly} projectId={projectId} /> },
     { key: 'payload', label: '请求体',
-      children: <RequestPayload postData={req.postData} onParseResult={onParseResult} readonly={readonly} /> },
+      children: <RequestPayload postData={req.postData}
+        onParseResult={onParseResult} readonly={readonly} projectId={projectId} /> },
     { key: 'resHeaders', label: '响应头',
       children: <HeaderTable headers={res.headers} scope={['response', 'headers']}
-        onParseResult={onParseResult} readonly={readonly} /> },
+        onParseResult={onParseResult} readonly={readonly} projectId={projectId} /> },
     { key: 'resBody', label: '响应体',
-      children: <ResponseBody content={res.content} onParseResult={onParseResult} readonly={readonly} /> },
+      children: <ResponseBody content={res.content}
+        onParseResult={onParseResult} readonly={readonly} projectId={projectId} /> },
     {
       key: 'cookies', label: 'Cookies',
       children: (
         <Flex vertical gap={12} style={{ width: '100%' }}>
           <Text strong>请求 Cookies</Text>
           <HeaderTable headers={req.cookies} scope={['request', 'cookies']}
-            onParseResult={onParseResult} readonly={readonly} />
+            onParseResult={onParseResult} readonly={readonly} projectId={projectId} />
           <Text strong>响应 Cookies</Text>
           <HeaderTable headers={res.cookies} scope={['response', 'cookies']}
-            onParseResult={onParseResult} readonly={readonly} />
+            onParseResult={onParseResult} readonly={readonly} projectId={projectId} />
         </Flex>
       ),
     },

@@ -80,7 +80,51 @@ export const PARSER_TEMPLATES = {
       } catch { return '（JWT 解析失败）'; }
     },
   },
-
+    // ---------- 数值运算 ----------
+  'number-add-one': {
+    label: '数值 +1', group: 'math', configFields: null,
+    fn: (s) => {
+      const n = Number(s);
+      if (Number.isNaN(n)) return `（不是数字：${s}）`;
+      return String(n + 1);
+    },
+  },
+  'number-sub-one': {
+    label: '数值 -1', group: 'math', configFields: null,
+    fn: (s) => {
+      const n = Number(s);
+      if (Number.isNaN(n)) return `（不是数字：${s}）`;
+      return String(n - 1);
+    },
+  },
+  'number-mul-two': {
+    label: '数值 ×2', group: 'math', configFields: null,
+    fn: (s) => {
+      const n = Number(s);
+      if (Number.isNaN(n)) return `（不是数字：${s}）`;
+      return String(n * 2);
+    },
+  },
+  'number-custom': {
+    label: '数值运算', group: 'math',
+    configFields: [
+      { name: 'op', label: '运算符（+ - * /）', required: true, multiline: false },
+      { name: 'operand', label: '操作数', required: true, multiline: false },
+    ],
+    fn: (s, cfg) => {
+      const n = Number(s);
+      if (Number.isNaN(n)) return `（不是数字：${s}）`;
+      const operand = Number(cfg.operand);
+      if (Number.isNaN(operand)) return `（操作数不是数字：${cfg.operand}）`;
+      switch (String(cfg.op).trim()) {
+        case '+': return String(n + operand);
+        case '-': return String(n - operand);
+        case '*': return String(n * operand);
+        case '/': return String(n / operand);
+        default: return `（未知运算符：${cfg.op}）`;
+      }
+    },
+  },
   // ---------- 哈希 ----------
   'sha-1': { label: 'SHA-1', group: 'hash', configFields: null,
     fn: async (s) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-1', toUint8(s)))) },
@@ -242,6 +286,7 @@ export const PARSER_TEMPLATES = {
 
 export const PARSER_GROUPS = {
   encode: '编码 / 解码',
+  math: '数值运算',
   hash: '哈希',
   symmetric: '对称加密',
   asymmetric: '非对称加密',
