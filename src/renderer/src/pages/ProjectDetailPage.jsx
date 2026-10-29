@@ -21,6 +21,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     projects, deleteProject, updateGroupRequests,
     renameGroup, moveGroup, deleteGroup, reorderGroups,
     updateRequestFields, applyResponse, resetGroupRequests,
+    reorderGroupRequests,   // ⬅ 新增
   } = useProjects();
   const { message } = AntApp.useApp();
 
@@ -134,6 +135,8 @@ export default function ProjectDetailPage({ projectId, onBack }) {
             showSelection={false}
             showAddToProject={false}
             headerTopExtra={workbenchTopExtra}
+            enableDrag={true}
+            onReorder={(from, to) => reorderGroupRequests(projectId, activeGroup.id, from, to)}
           />
         </div>
         <GroupRunnerModal

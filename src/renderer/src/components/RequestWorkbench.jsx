@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Splitter, Flex, Input, Select, Segmented, Typography, Tag,
-  Button, Empty, Spin, App, Checkbox, Popover, Listy, Divider, Popconfirm,
+  Button, Empty, Spin, App, Checkbox, Popover, Listy, Divider, Popconfirm, Space,
 } from 'antd';
 import {
   SearchOutlined, PlusOutlined, ThunderboltOutlined, HolderOutlined,
@@ -39,6 +39,92 @@ const PRESET_TAGS = [
   { label: '待办', color: 'processing' },
   { label: '忽略', color: 'default' },
 ];
+
+/* ==================== 静态资源类型（可配置） ==================== */
+const STATIC_TYPES_STORAGE_KEY = 'har-workbench-static-types-v1';
+
+const STATIC_TYPE_DEFS = [
+  {
+    key: 'image', label: '图片',
+    mimePrefixes: ['image/'], mimeExact: [],
+    exts: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg', 'avif', 'tiff', 'tif'],
+  },
+  {
+    key: 'audio', label: '音频',
+    mimePrefixes: ['audio/'], mimeExact: [],
+    exts: ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'],
+  },
+  {
+    key: 'video', label: '视频',
+    mimePrefixes: ['video/'], mimeExact: [],
+    exts: ['mp4', 'webm', 'm4v', 'mov', 'avi', 'mkv'],
+  },
+  {
+    key: 'font', label: '字体',
+    mimePrefixes: ['font/'],
+    mimeExact: [
+      'application/font-woff', 'application/x-font-woff',
+      'application/font-woff2', 'application/x-font-ttf',
+      'application/x-font-truetype', 'application/x-font-otf',
+      'application/x-font-opentype', 'application/vnd.ms-fontobject',
+    ],
+    exts: ['woff', 'woff2', 'ttf', 'otf', 'eot'],
+  },
+  {
+    key: 'css', label: 'CSS',
+    mimePrefixes: [], mimeExact: ['text/css'],
+    exts: ['css'],
+  },
+  {
+    key: 'js', label: 'JS',
+    mimePrefixes: [],
+    mimeExact: [
+      'text/javascript', 'application/javascript',
+      'application/x-javascript', 'application/ecmascript',
+    ],
+    exts: ['js', 'mjs', 'cjs'],
+  },
+  {
+    key: 'html', label: 'HTML',
+    mimePrefixes: [],
+    mimeExact: ['text/html', 'application/xhtml+xml'],
+    exts: ['html', 'htm', 'xhtml'],
+  },
+  {
+    key: 'map', label: 'SourceMap',
+    mimePrefixes: [], mimeExact: [],
+    exts: ['map'],
+  },
+];
+
+function getMime(entry) {
+  return String(entry?.response?.content?.mimeType || '').toLowerCase().split(';')[0].trim();
+}
+
+function getPathExt(entry) {
+  const url = entry?.request?.url || '';
+  let pathname = '';
+  try { pathname = new URL(url).pathname.toLowerCase(); }
+  catch { pathname = String(url).toLowerCase().split('?')[0].split('#')[0]; }
+  const m = pathname.match(/\.([a-z0-9]+)$/);
+  return m ? m[1] : '';
+}
+
+function matchesType(entry, def) {
+  const mime = getMime(entry);
+  if (mime) {
+    for (const p of def.mimePrefixes) if (mime.startsWith(p)) return true;
+    if (def.mimeExact.includes(mime)) return true;
+  }
+  const ext = getPathExt(entry);
+  if (ext && def.exts.includes(ext)) return true;
+  return false;
+}
+
+function makeStaticMatcher(enabledKeys) {
+  const types = STATIC_TYPE_DEFS.filter((t) => enabledKeys.includes(t.key));
+  return (entry) => types.some((t) => matchesType(entry, t));
+}
 
 function TagManager({ currentTags, onChange }) {
   const [input, setInput] = useState('');
@@ -160,9 +246,27 @@ export default function RequestWorkbench({
   const [selectedUids, setSelectedUids] = useState(() => new Set());
   const [parsePreview, setParsePreview] = useState(null);
   const [activeTabKey, setActiveTabKey] = useState('general');
+  const [hideStatic, setHideStatic] = useState(false);
+
+  // 静态资源类型（持久化）
+  const [staticTypes, setStaticTypes] = useState(() => {
+    const all = STATIC_TYPE_DEFS.map((t) => t.key);
+    try {
+      const raw = localStorage.getItem(STATIC_TYPES_STORAGE_KEY);
+      if (!raw) return all;
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return all;
+      return arr.filter((k) => STATIC_TYPE_DEFS.some((t) => t.key === k));
+    } catch { return all; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(STATIC_TYPES_STORAGE_KEY, JSON.stringify(staticTypes)); } catch {}
+  }, [staticTypes]);
+
+  const staticMatcher = useMemo(() => makeStaticMatcher(staticTypes), [staticTypes]);
 
   const [editingAssignment, setEditingAssignment] = useState(null);
-
   const [draggingIndex, setDraggingIndex] = useState(null);
   const [dropIndex, setDropIndex] = useState(null);
 
@@ -195,6 +299,11 @@ export default function RequestWorkbench({
   const current = useMemo(
     () => entries.find((e) => e._uid === currentUid) || null,
     [entries, currentUid]
+  );
+
+  const staticCount = useMemo(
+    () => entries.filter((e) => staticMatcher(e)).length,
+    [entries, staticMatcher]
   );
 
   const assignmentsKey = current ? JSON.stringify(current._parseAssignments || []) : '';
@@ -245,6 +354,7 @@ export default function RequestWorkbench({
     const kw = keyword.trim().toLowerCase();
     const rangeFn = STATUS_RANGE[statusRange] || STATUS_RANGE.ALL;
     return entries.filter((e) => {
+      if (hideStatic && staticMatcher(e)) return false;
       const m = e.request?.method;
       const s = e.response?.status || 0;
       if (method !== 'ALL' && m !== method) return false;
@@ -256,7 +366,7 @@ export default function RequestWorkbench({
         m?.toLowerCase().includes(kw)
       );
     });
-  }, [entries, keyword, method, statusRange]);
+  }, [entries, keyword, method, statusRange, hideStatic, staticMatcher]);
 
   const allChecked = filtered.length > 0 && filtered.every((e) => selectedUids.has(e._uid));
   const someChecked = filtered.some((e) => selectedUids.has(e._uid));
@@ -279,6 +389,55 @@ export default function RequestWorkbench({
 
   const updateTags = (uid, tags) => {
     setEntries((prev) => prev.map((e) => (e._uid === uid ? { ...e, tags } : e)));
+  };
+
+  const handleDeleteEntry = (entry) => {
+    const idx = entries.findIndex((e) => e._uid === entry._uid);
+    if (idx < 0) return;
+    const next = entries.filter((e) => e._uid !== entry._uid);
+    setEntries(next);
+
+    if (currentUid === entry._uid) {
+      const fallback = next[idx] || next[idx - 1] || null;
+      setCurrentUid(fallback?._uid || null);
+      setParsePreview(null);
+    }
+
+    setSelectedUids((prev) => {
+      if (!prev.has(entry._uid)) return prev;
+      const n = new Set(prev);
+      n.delete(entry._uid);
+      return n;
+    });
+
+    message.success('已删除请求');
+  };
+
+  const handleClearStatic = () => {
+    if (staticTypes.length === 0) {
+      message.warning('请先在「类型」里至少勾选一种静态资源类型');
+      return;
+    }
+    const toRemove = new Set(entries.filter((e) => staticMatcher(e)).map((e) => e._uid));
+    if (toRemove.size === 0) {
+      message.info('没有匹配当前勾选类型的静态资源');
+      return;
+    }
+    const next = entries.filter((e) => !toRemove.has(e._uid));
+    setEntries(next);
+
+    if (currentUid && toRemove.has(currentUid)) {
+      setCurrentUid(next[0]?._uid || null);
+      setParsePreview(null);
+    }
+
+    setSelectedUids((prev) => {
+      const n = new Set(prev);
+      toRemove.forEach((uid) => n.delete(uid));
+      return n;
+    });
+
+    message.success(`已清除 ${toRemove.size} 条静态资源请求`);
   };
 
   const handleParseResult = async (result) => {
@@ -390,6 +549,7 @@ export default function RequestWorkbench({
     const isChecked = selectedUids.has(entry._uid);
     const tags = entry.tags || [];
     const assignmentsCount = (entry._parseAssignments || []).length;
+    const isStatic = staticMatcher(entry);
 
     const rowContent = (
       <div onClick={() => setCurrentUid(entry._uid)}
@@ -397,7 +557,7 @@ export default function RequestWorkbench({
           padding: '6px 10px', cursor: 'pointer', fontSize: 12,
           background: isCurrent ? '#e6f4ff' : 'transparent',
           borderBottom: '1px solid #f0f0f0',
-          opacity: draggingIndex === idx ? 0.4 : 1,
+          opacity: draggingIndex === idx ? 0.4 : (isStatic ? 0.75 : 1),
           outline: (dropIndex === idx && draggingIndex !== idx) ? '2px dashed #1677ff' : 'none',
         }}>
         <Flex align="center" gap={6} style={{ minWidth: 0 }}>
@@ -415,6 +575,9 @@ export default function RequestWorkbench({
             style={{ margin: 0, minWidth: 40, textAlign: 'center' }}>{res.status}</Tag>
           <Text ellipsis style={{ width: 120, color: '#595959' }} title={parts.host}>{parts.host}</Text>
           <Text ellipsis style={{ flex: 1, minWidth: 0 }} title={parts.path}>{parts.path}</Text>
+          {isStatic && (
+            <Tag color="default" style={{ margin: 0, fontSize: 10, opacity: 0.75 }}>静态</Tag>
+          )}
           {assignmentsCount > 0 && (
             <ChainManagerPopover
               entry={entry}
@@ -430,6 +593,25 @@ export default function RequestWorkbench({
           <Text type="secondary" style={{ flexShrink: 0, width: 60, textAlign: 'right' }}>
             {formatTime(entry.time)}
           </Text>
+          <Popconfirm
+            title="删除这条请求？"
+            description="会同时移除它的字段配置"
+            onConfirm={(e) => { e?.stopPropagation?.(); handleDeleteEntry(entry); }}
+            onCancel={(e) => e?.stopPropagation?.()}
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+          >
+            <Button
+              size="small"
+              type="text"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={(e) => e.stopPropagation()}
+              title="删除请求"
+              style={{ flexShrink: 0 }}
+            />
+          </Popconfirm>
         </Flex>
         <Flex align="center" gap={4} wrap style={{ marginTop: 4, paddingLeft: showSelection || enableDrag ? 24 : 0 }}>
           {tags.map((t) => (
@@ -461,6 +643,45 @@ export default function RequestWorkbench({
   const listyAvailable = typeof Listy === 'function' || (Listy && Listy.$$typeof);
   const hasEntries = entries.length > 0;
 
+  // 类型选择 Popover 内容
+  const typesPopoverContent = (
+    <div style={{ minWidth: 240 }}>
+      <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
+        <Text strong style={{ fontSize: 12 }}>静态资源类型</Text>
+        <Space size={2}>
+          <Button size="small" type="link"
+            onClick={() => setStaticTypes(STATIC_TYPE_DEFS.map((t) => t.key))}>
+            全选
+          </Button>
+          <Button size="small" type="link"
+            onClick={() => setStaticTypes([])}>
+            清空
+          </Button>
+        </Space>
+      </Flex>
+      <Flex vertical gap={4}>
+        {STATIC_TYPE_DEFS.map((t) => (
+          <Checkbox
+            key={t.key}
+            checked={staticTypes.includes(t.key)}
+            onChange={(e) => {
+              setStaticTypes((prev) => {
+                if (e.target.checked) return [...new Set([...prev, t.key])];
+                return prev.filter((k) => k !== t.key);
+              });
+            }}
+          >
+            <Text style={{ fontSize: 12 }}>{t.label}</Text>
+          </Checkbox>
+        ))}
+      </Flex>
+      <Divider style={{ margin: '8px 0' }} />
+      <Text type="secondary" style={{ fontSize: 11 }}>
+        被勾选的类型会被「隐藏」和「清除」操作处理。配置会记住。
+      </Text>
+    </div>
+  );
+
   return (
     <>
       <Splitter style={{ height: '100%' }}>
@@ -488,6 +709,44 @@ export default function RequestWorkbench({
                       ]} />
                     <Text type="secondary" style={{ fontSize: 11 }}>{filtered.length} 条</Text>
                   </Flex>
+
+                  {/* 静态资源控制 */}
+                  <Flex justify="space-between" align="center" gap={6} wrap>
+                    <Flex align="center" gap={6} wrap>
+                      <Popover
+                        trigger="click"
+                        placement="bottomLeft"
+                        content={typesPopoverContent}
+                        title={<Text style={{ fontSize: 12 }}>选择哪些类型视为静态资源</Text>}
+                      >
+                        <Button size="small">
+                          类型 {staticTypes.length}/{STATIC_TYPE_DEFS.length}
+                        </Button>
+                      </Popover>
+                      <Checkbox
+                        checked={hideStatic}
+                        onChange={(e) => setHideStatic(e.target.checked)}
+                        disabled={staticTypes.length === 0}
+                      >
+                        <Text style={{ fontSize: 12 }}>
+                          隐藏静态{staticCount > 0 ? `（${staticCount}）` : ''}
+                        </Text>
+                      </Checkbox>
+                    </Flex>
+                    {staticTypes.length > 0 && staticCount > 0 && (
+                      <Popconfirm
+                        title={`删除全部 ${staticCount} 条静态资源请求？`}
+                        description="仅删除当前勾选类型的资源"
+                        onConfirm={handleClearStatic}
+                        okText="删除"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                      >
+                        <Button size="small" danger>清除静态资源</Button>
+                      </Popconfirm>
+                    )}
+                  </Flex>
+
                   {(showSelection || showAddToProject) && (
                     <Flex justify="space-between" align="center" gap={6}>
                       {showSelection ? (
@@ -516,7 +775,7 @@ export default function RequestWorkbench({
                 )
               ) : !listyAvailable ? (
                 <div style={{ height: '100%', overflow: 'auto' }}>
-                  {filtered.map((entry, i) => renderRow(entry, i))}
+                  {filtered.map((entry) => renderRow(entry, entries.indexOf(entry)))}
                 </div>
               ) : listHeight > 0 ? (
                 <Listy virtual items={filtered} rowKey={(r) => r._uid}
