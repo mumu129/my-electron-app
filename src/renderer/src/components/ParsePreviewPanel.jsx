@@ -14,92 +14,84 @@ const { Text } = Typography;
 
 function cleanEntry(entry) {
   if (!entry) return null;
-  const { _uid, tags, _addedAt, ...rest } = entry;
+  const { _uid, tags, _addedAt, _initialRequest, _initialResponse, _parseAssignments, ...rest } = entry;
   return rest;
 }
 
 async function doSend(entry) {
-  const req = entry.request || {};
+  const req = entry?.request || {};
   const method = (req.method || 'GET').toUpperCase();
   const headers = buildHeadersFromEntry(req);
   const body = buildBodyFromEntry(req, method);
   const payload = { url: req.url, method, headers, body };
-
   const started = performance.now();
+
   if (window.electronAPI?.httpRequest) {
-    const result = await window.electronAPI.httpRequest(payload);
+    const r = await window.electronAPI.httpRequest(payload);
     return {
-      status: result.status,
-      statusText: result.statusText,
-      headers: result.headers || [],
-      body: result.body || '',
-      time: result.time || Math.round(performance.now() - started),
-      size: new Blob([result.body || '']).size,
+      status: r.status, statusText: r.statusText, headers: r.headers || [],
+      body: r.body || '', time: r.time || Math.round(performance.now() - started),
+      size: new Blob([r.body || '']).size,
     };
   }
   const res = await fetch(req.url, { method, headers, body });
   const text = await res.text();
   return {
-    status: res.status,
-    statusText: res.statusText,
+    status: res.status, statusText: res.statusText,
     headers: [...res.headers.entries()].map(([k, v]) => ({ name: k, value: v })),
-    body: text,
-    time: Math.round(performance.now() - started),
+    body: text, time: Math.round(performance.now() - started),
     size: new Blob([text]).size,
   };
 }
 
-export default function ParsePreviewPanel({ parsed, onClose, projectId }) {
+export default function ParsePreviewPanel({
+  parsed, onClose, projectId,
+  activeKey, onTabChange,
+}) {
   const { message } = AntApp.useApp();
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState(null);
   const [sendExpanded, setSendExpanded] = useState(false);
 
-  const jsonText = useMemo(() => {
-    if (!parsed?.entry) return '';
-    return JSON.stringify(cleanEntry(parsed.entry), null, 2);
-  }, [parsed]);
+  // ⬇ 关键防御：entry 缺失直接当空状态
+  const entry = parsed?.entry;
+  const hasEntry = !!(entry && entry.request);
 
-  if (!parsed) {
+  const jsonText = useMemo(() => {
+    if (!hasEntry) return '';
+    return JSON.stringify(cleanEntry(entry), null, 2);
+  }, [entry, hasEntry]);
+
+  // 空状态（包括 parsed 有值但 entry 缺失的情况）
+  if (!parsed || !hasEntry) {
     return (
       <Flex justify="center" align="center" style={{ height: '100%', background: '#fafafa' }}>
-        <Empty
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={
             <Text type="secondary" style={{ fontSize: 12 }}>
-              点击任一字段右侧 <ThunderboltOutlined style={{ color: '#1677ff' }} /> 选择解析算法，此处将展示解析后的完整请求
+              点击任一字段右侧 <ThunderboltOutlined style={{ color: '#1677ff' }} /> 选择解析算法
             </Text>
-          }
-        />
+          } />
       </Flex>
     );
   }
 
-  const entry = parsed.entry;
-  const req = entry.request || {};
+  const req = entry.request;
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(jsonText);
-      message.success('已复制解析后的完整请求');
-    } catch { message.warning('复制失败'); }
+    try { await navigator.clipboard.writeText(jsonText); message.success('已复制'); }
+    catch { message.warning('复制失败'); }
   };
 
   const handleSend = async () => {
-    setSending(true);
-    setSendExpanded(true);
-    setSendResult(null);
-    try {
-      const r = await doSend(entry);
-      setSendResult(r);
-    } catch (e) {
-      setSendResult({ error: String(e?.message || e) });
-    } finally {
-      setSending(false);
-    }
+    setSending(true); setSendExpanded(true); setSendResult(null);
+    try { setSendResult(await doSend(entry)); }
+    catch (e) { setSendResult({ error: String(e?.message || e) }); }
+    finally { setSending(false); }
   };
 
-  const tabsKey = `${entry._uid || entry.startedDateTime}-${parsed.chain?.map((c) => c.key).join('>')}`;
+  const tabsKey = `${entry._uid || entry.startedDateTime || 'preview'}-${(parsed.chain || [])
+    .map((c) => (typeof c === 'string' ? c : c.key)).join('>')}`;
 
   return (
     <Flex vertical style={{ height: '100%', background: '#fff', borderTop: '1px solid #f0f0f0' }}>
@@ -107,19 +99,28 @@ export default function ParsePreviewPanel({ parsed, onClose, projectId }) {
         style={{ padding: '8px 12px', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
         <ThunderboltOutlined style={{ color: '#1677ff' }} />
         <Text strong>解析预览</Text>
-        {(parsed.chain || []).map((c, i) => (
-          <Tag key={`${c.key}-${i}`} color="blue" style={{ margin: 0 }}>
-            {i + 1}. {c.label}
-          </Tag>
-        ))}
+        {(parsed.chain || []).map((c, i) => {
+          const label = typeof c === 'string' ? c : (c.label || c.key);
+          return <Tag key={i} color="blue" style={{ margin: 0 }}>{i + 1}. {label}</Tag>;
+        })}
         {parsed.fieldLabel && <Tag>字段：{parsed.fieldLabel}</Tag>}
+        {parsed.autoLoaded && <Tag color="geekblue">来自已绑定算法</Tag>}
         <div style={{ flex: 1 }} />
-        <Button size="small" icon={<CopyOutlined />} onClick={copy}>复制完整请求</Button>
+        <Button size="small" icon={<CopyOutlined />} onClick={copy}>复制</Button>
         <Button size="small" type="text" icon={<CloseOutlined />} onClick={onClose} />
       </Flex>
 
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        <RequestDetail entry={entry} inline readonly hideHeader tabsKey={tabsKey} projectId={projectId} />
+        <RequestDetail
+          entry={entry}
+          inline
+          readonly
+          hideHeader
+          tabsKey={tabsKey}
+          projectId={projectId}
+          activeKey={activeKey}
+          onTabChange={onTabChange}
+        />
       </div>
 
       <div style={{ flexShrink: 0, borderTop: '1px solid #f0f0f0', background: '#fafafa' }}>

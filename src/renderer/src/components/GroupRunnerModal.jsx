@@ -5,12 +5,14 @@ import {
 } from 'antd';
 import {
   PlayCircleOutlined, StopOutlined, ClockCircleOutlined, ThunderboltOutlined,
-  ReloadOutlined,
+  ReloadOutlined, GlobalOutlined,
 } from '@ant-design/icons';
 import { buildHeadersFromEntry, buildBodyFromEntry } from '../utils/httpShared';
 import { formatBytes, statusColor } from '../utils/har';
 import { applyAssignmentsToEntry } from '../utils/applyAssignments';
+import { buildCustomTemplates, buildScriptTemplates } from '../utils/parsers';
 import { useAlgorithms } from '../store/algorithmStore';
+import { useScripts } from '../store/scriptStore';
 
 const { Text: AntText } = Typography;
 
@@ -30,17 +32,16 @@ function statusTag(status) {
   }
 }
 
-async function sendRequest(entry) {
+async function sendRequest(entry, proxy) {
   const req = entry.request || {};
   const method = (req.method || 'GET').toUpperCase();
   const headers = buildHeadersFromEntry(req);
   const body = buildBodyFromEntry(req, method);
   const started = performance.now();
-
-  console.log('[SEND]', { url: req.url, method, headers, body });
+  console.log('[SEND]', { url: req.url, method, headers, body, proxy });
 
   if (window.electronAPI?.httpRequest) {
-    const r = await window.electronAPI.httpRequest({ url: req.url, method, headers, body });
+    const r = await window.electronAPI.httpRequest({ url: req.url, method, headers, body, proxy });
     return { ...r, time: r.time || Math.round(performance.now() - started) };
   }
   const res = await fetch(req.url, { method, headers, body });
@@ -55,11 +56,12 @@ async function sendRequest(entry) {
 }
 
 export default function GroupRunnerModal({
-  open, onClose, groupName, requests, projectId,
+  open, onClose, groupName, requests, projectId, projectProxy,
   onUpdateRequestFields, onApplyResponse, onReset,
 }) {
   const { message } = AntApp.useApp();
-  const { getEffectiveConfigMap } = useAlgorithms();
+  const { getEffectiveConfigMap, getCustomAlgorithms } = useAlgorithms();
+  const { scripts } = useScripts();
 
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState([]);
@@ -80,6 +82,16 @@ export default function GroupRunnerModal({
   );
   const configMapRef = useRef(configMap);
   useEffect(() => { configMapRef.current = configMap; }, [configMap]);
+
+  const customTemplates = useMemo(() => ({
+    ...buildCustomTemplates(getCustomAlgorithms(projectId)),
+    ...buildScriptTemplates(scripts),
+  }), [getCustomAlgorithms, projectId, scripts]);
+  const customTemplatesRef = useRef(customTemplates);
+  useEffect(() => { customTemplatesRef.current = customTemplates; }, [customTemplates]);
+
+  const proxyRef = useRef(projectProxy);
+  useEffect(() => { proxyRef.current = projectProxy; }, [projectProxy]);
 
   const initSteps = (list) => list.map((r, i) => ({
     index: i, uid: r._uid,
@@ -107,8 +119,6 @@ export default function GroupRunnerModal({
   const runOnce = async (roundIndex) => {
     setSteps(initSteps(requestsRef.current));
     setCurrentRound(roundIndex);
-
-    // 本轮上下文：每个 step 的响应累积进去
     const context = { steps: [] };
 
     for (let i = 0; i < requestsRef.current.length; i++) {
@@ -124,14 +134,13 @@ export default function GroupRunnerModal({
 
       try {
         context.currentStep = i;
-
-        const { request: sentRequest, writableUpdates } =
-          await applyAssignmentsToEntry(
-            entry,
-            entry._parseAssignments || [],
-            configMapRef.current,
-            context
-          );
+        const { request: sentRequest, writableUpdates } = await applyAssignmentsToEntry(
+          entry,
+          entry._parseAssignments || [],
+          configMapRef.current,
+          context,
+          { customTemplates: customTemplatesRef.current }
+        );
 
         if (writableUpdates.length > 0) {
           onUpdateRequestFields?.(entry._uid, writableUpdates);
@@ -139,9 +148,8 @@ export default function GroupRunnerModal({
 
         updateStep(i, { sentUrl: sentRequest.url });
 
-        const result = await sendRequest({ ...entry, request: sentRequest });
-
-        // 把本次响应放进 context（索引与 entry index 对齐）
+        // ⬇ 传代理
+        const result = await sendRequest({ ...entry, request: sentRequest }, proxyRef.current);
         context.steps[i] = { index: i, response: result };
 
         const nextResponse = {
@@ -228,6 +236,11 @@ export default function GroupRunnerModal({
           <span>按顺序执行请求组 · {groupName || '-'}</span>
           <Tag>{requestCount} 条</Tag>
           {currentRound > 0 && <Tag color="processing">第 {currentRound} 轮</Tag>}
+          {projectProxy && (
+            <Tooltip title={`发送时使用代理：${projectProxy}`}>
+              <Tag color="blue" icon={<GlobalOutlined />}>{projectProxy}</Tag>
+            </Tooltip>
+          )}
         </Flex>
       }
     >
@@ -258,12 +271,12 @@ export default function GroupRunnerModal({
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="算法链上下文"
+        message="执行逻辑"
         description={
           <div style={{ fontSize: 12 }}>
-            「从响应取值」算法可引用本轮任意前序请求的响应（输入请求序号，从 0 开始）；
-            「JS 表达式」「主进程脚本」可直接操作 <code>responses</code> 数组。
-            链里每一步的输出是下一步的输入。
+            每次发送前会基于请求当前值重新应用算法链。
+            发送成功后把解析值写回请求、把响应写回请求组。下次发送时基于新值再次应用算法。
+            {projectProxy && <div style={{ marginTop: 4 }}>使用代理：<code>{projectProxy}</code></div>}
           </div>
         }
       />
@@ -282,7 +295,9 @@ export default function GroupRunnerModal({
                   {s.sentUrl || s.url}
                 </AntText>
                 {s.response && (
-                  <Tag color={statusColor(s.response.status)} style={{ margin: 0 }}>{s.response.status}</Tag>
+                  <Tag color={statusColor(s.response.status)} style={{ margin: 0 }}>
+                    {s.response.status}
+                  </Tag>
                 )}
                 {s.elapsed != null && (
                   <AntText type="secondary" style={{ fontSize: 11 }}>

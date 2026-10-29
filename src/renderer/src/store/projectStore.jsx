@@ -24,13 +24,20 @@ export function ProjectProvider({ children }) {
   }, [projects]);
 
   const createProject = (name) => {
-    const p = { id: uid(), name, createdAt: Date.now(), groups: [] };
+    const p = { id: uid(), name, createdAt: Date.now(), groups: [], proxy: '' };
     setProjects((prev) => [...prev, p]);
     return p;
   };
 
   const deleteProject = (projectId) => {
     setProjects((prev) => prev.filter((p) => p.id !== projectId));
+  };
+
+  const updateProjectProxy = (projectId, proxy) => {
+    setProjects((prev) =>
+      prev.map((p) => (p.id === projectId ? { ...p, proxy: proxy || '' } : p))
+    );
+    console.log('[ProjectStore] updateProjectProxy:', projectId, proxy);
   };
 
   const createGroup = (projectId, name) => {
@@ -63,6 +70,21 @@ export function ProjectProvider({ children }) {
         if (target < 0 || target >= p.groups.length) return p;
         const groups = [...p.groups];
         [groups[idx], groups[target]] = [groups[target], groups[idx]];
+        return { ...p, groups };
+      })
+    );
+  };
+
+  const reorderGroups = (projectId, fromIndex, toIndex) => {
+    if (fromIndex === toIndex) return;
+    setProjects((prev) =>
+      prev.map((p) => {
+        if (p.id !== projectId) return p;
+        const groups = [...p.groups];
+        if (fromIndex < 0 || fromIndex >= groups.length) return p;
+        if (toIndex < 0 || toIndex >= groups.length) return p;
+        const [moved] = groups.splice(fromIndex, 1);
+        groups.splice(toIndex, 0, moved);
         return { ...p, groups };
       })
     );
@@ -117,7 +139,6 @@ export function ProjectProvider({ children }) {
     );
   };
 
-  /** 写回 request 的特定字段（writableUpdates） */
   const updateRequestFields = (projectId, groupId, entryUid, fieldUpdates) => {
     if (!Array.isArray(fieldUpdates) || fieldUpdates.length === 0) return;
     setProjects((prev) =>
@@ -144,7 +165,6 @@ export function ProjectProvider({ children }) {
     );
   };
 
-  /** 写回 response */
   const applyResponse = (projectId, groupId, entryUid, response) => {
     setProjects((prev) =>
       prev.map((p) => {
@@ -165,7 +185,6 @@ export function ProjectProvider({ children }) {
     );
   };
 
-  /** 重置：request/response 恢复初始快照，_parseAssignments 保留 */
   const resetGroupRequests = (projectId, groupId) => {
     setProjects((prev) =>
       prev.map((p) => {
@@ -190,8 +209,8 @@ export function ProjectProvider({ children }) {
 
   return (
     <ProjectContext.Provider value={{
-      projects, createProject, deleteProject,
-      createGroup, renameGroup, moveGroup, deleteGroup,
+      projects, createProject, deleteProject, updateProjectProxy,
+      createGroup, renameGroup, moveGroup, reorderGroups, deleteGroup,
       addRequestsToGroup, updateGroupRequests,
       updateRequestFields, applyResponse, resetGroupRequests,
     }}>

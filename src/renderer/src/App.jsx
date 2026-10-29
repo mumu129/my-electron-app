@@ -1,9 +1,8 @@
-import React, { useState } from 'react';
-import { App as AntApp, Breadcrumb, Layout, Menu, theme } from 'antd';
+import React, { useEffect, useState } from 'react';
+import { App as AntApp, Breadcrumb, Layout, Menu, theme, Spin, Flex } from 'antd';
 import {
   FileTextOutlined, ProjectOutlined, ExperimentOutlined,
-  PlusOutlined, HistoryOutlined, SettingOutlined,
-  GlobalOutlined,
+  PlusOutlined, HistoryOutlined, SettingOutlined, GlobalOutlined,
 } from '@ant-design/icons';
 import ErrorBoundary from './components/ErrorBoundary';
 import HarViewer from './components/HarViewer';
@@ -12,8 +11,11 @@ import ProjectHistoryPage from './pages/ProjectHistoryPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
 import ProjectSettingsPage from './pages/ProjectSettingsPage';
 import GlobalAlgorithmPage from './pages/GlobalAlgorithmPage';
-import { ProjectProvider } from './store/projectStore';
+import { ProjectProvider, useProjects } from './store/projectStore';
 import { AlgorithmProvider } from './store/algorithmStore';
+import { ScriptProvider } from './store/scriptStore';
+import usePersistentState from './hooks/usePersistentState';
+import useIDBState from './hooks/useIDBState';
 
 const { Header, Content, Footer } = Layout;
 
@@ -67,14 +69,21 @@ function Placeholder({ title }) {
 }
 
 function AppInner() {
-  const [current, setCurrent] = useState('har');
-  const [viewingProjectId, setViewingProjectId] = useState(null);
-  const [harEntries, setHarEntries] = useState([]);
-  const [harFileName, setHarFileName] = useState('');
+  const { projects } = useProjects();
+  const [current, setCurrent] = usePersistentState('ui-last-menu', 'har');
+  const [viewingProjectId, setViewingProjectId] = usePersistentState('ui-last-project', null);
+  const [harFileName, setHarFileName] = usePersistentState('ui-har-filename', '');
+  const [harEntries, setHarEntries, harMeta] = useIDBState('har-entries-v1', []);
 
   const { token: { colorBgContainer, borderRadiusLG } } = theme.useToken();
   const currentYear = new Date().getFullYear();
   const isHar = current === 'har';
+
+  useEffect(() => {
+    if (viewingProjectId && !projects.find((p) => p.id === viewingProjectId)) {
+      setViewingProjectId(null);
+    }
+  }, [viewingProjectId, projects, setViewingProjectId]);
 
   const handleMenuClick = (e) => {
     setViewingProjectId(null);
@@ -84,16 +93,28 @@ function AppInner() {
   const renderContent = () => {
     if (viewingProjectId) {
       return (
-        <ProjectDetailPage projectId={viewingProjectId}
-          onBack={() => setViewingProjectId(null)} />
+        <ProjectDetailPage
+          projectId={viewingProjectId}
+          onBack={() => setViewingProjectId(null)}
+        />
       );
     }
     switch (current) {
       case 'har':
+        if (!harMeta.loaded) {
+          return (
+            <Flex justify="center" align="center" style={{ height: '100%' }}>
+              <Spin tip="加载 HAR 数据…" />
+            </Flex>
+          );
+        }
         return (
           <HarViewer
-            entries={harEntries} setEntries={setHarEntries}
-            fileName={harFileName} setFileName={setHarFileName}
+            entries={harEntries}
+            setEntries={setHarEntries}
+            fileName={harFileName}
+            setFileName={setHarFileName}
+            flushHar={harMeta.flush}
           />
         );
       case 'project-new': return <ProjectNewPage />;
@@ -143,14 +164,14 @@ function AppInner() {
 
 export default function App() {
   return (
-    
     <AntApp>
       <AlgorithmProvider>
         <ProjectProvider>
-          <AppInner />
+          <ScriptProvider>
+            <AppInner />
+          </ScriptProvider>
         </ProjectProvider>
       </AlgorithmProvider>
     </AntApp>
-   
   );
 }

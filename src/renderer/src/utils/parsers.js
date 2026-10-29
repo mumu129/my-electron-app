@@ -7,14 +7,8 @@ function b64ToBytes(b64) {
   const bin = atob(p);
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
-function bytesToB64(bytes) {
-  let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-function bytesToHex(bytes) {
-  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
-}
+function bytesToB64(bytes) { let bin = ''; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]); return btoa(bin); }
+function bytesToHex(bytes) { return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(''); }
 function hexToBytes(hex) {
   const clean = String(hex).replace(/\s/g, '');
   if (!/^[0-9a-fA-F]+$/.test(clean) || clean.length % 2 !== 0) throw new Error('不是合法的 Hex');
@@ -24,7 +18,7 @@ function toUint8(s) { return new TextEncoder().encode(s || ''); }
 function fromUint8(bytes) { return new TextDecoder('utf-8', { fatal: false }).decode(bytes); }
 
 export const PARSER_TEMPLATES = {
-  // ============ 编码 / 解码 ============
+  // ---------- 编码 / 解码 ----------
   'base64-decode': {
     label: 'Base64 解码', group: 'encode', configFields: null,
     fn: (s) => { if (!s) return '（空）'; try { return fromUint8(b64ToBytes(s)); } catch { return '（不是合法的 Base64）'; } },
@@ -61,31 +55,22 @@ export const PARSER_TEMPLATES = {
     label: 'JSON 尝试解析', group: 'encode', configFields: null,
     fn: (s) => {
       const str = String(s ?? '');
-      try {
-        const v = JSON.parse(str);
-        return typeof v === 'object' ? JSON.stringify(v) : String(v);
-      } catch { return str; }
+      try { const v = JSON.parse(str); return typeof v === 'object' ? JSON.stringify(v) : String(v); }
+      catch { return str; }
     },
   },
   'json-stringify': {
     label: 'JSON 序列化', group: 'encode', configFields: null,
-    fn: (s) => {
-      const str = String(s ?? '');
-      try { return JSON.stringify(JSON.parse(str)); } catch { return JSON.stringify(str); }
-    },
+    fn: (s) => { const str = String(s ?? ''); try { return JSON.stringify(JSON.parse(str)); } catch { return JSON.stringify(str); } },
   },
   'json-path': {
     label: 'JSON 路径取值', group: 'encode',
     configFields: [{ name: 'path', label: '路径（如 data.sign）', required: true, multiline: false }],
     fn: (s, cfg) => {
-      let value;
-      try { value = JSON.parse(String(s ?? '')); }
-      catch { return '（输入不是 JSON）'; }
+      let value; try { value = JSON.parse(String(s ?? '')); } catch { return '（输入不是 JSON）'; }
       for (const k of String(cfg.path || '').split('.').map((x) => x.trim()).filter(Boolean)) {
         if (value == null) return '';
-        if (typeof value === 'string') {
-          try { value = JSON.parse(value); } catch { return ''; }
-        }
+        if (typeof value === 'string') { try { value = JSON.parse(value); } catch { return ''; } }
         if (typeof value !== 'object') return '';
         value = value[k];
       }
@@ -105,28 +90,17 @@ export const PARSER_TEMPLATES = {
     },
   },
 
-  // ============ 文本处理 ============
-  'text-trim': {
-    label: '去首尾空白', group: 'text', configFields: null,
-    fn: (s) => String(s ?? '').trim(),
-  },
+  // ---------- 文本处理 ----------
+  'text-trim': { label: '去首尾空白', group: 'text', configFields: null, fn: (s) => String(s ?? '').trim() },
   'text-strip-prefix': {
     label: '去前缀', group: 'text',
     configFields: [{ name: 'prefix', label: '前缀', required: true, multiline: false }],
-    fn: (s, cfg) => {
-      const str = String(s ?? '');
-      const p = String(cfg.prefix ?? '');
-      return p && str.startsWith(p) ? str.slice(p.length) : str;
-    },
+    fn: (s, cfg) => { const str = String(s ?? ''); const p = String(cfg.prefix ?? ''); return p && str.startsWith(p) ? str.slice(p.length) : str; },
   },
   'text-strip-suffix': {
     label: '去后缀', group: 'text',
     configFields: [{ name: 'suffix', label: '后缀', required: true, multiline: false }],
-    fn: (s, cfg) => {
-      const str = String(s ?? '');
-      const p = String(cfg.suffix ?? '');
-      return p && str.endsWith(p) ? str.slice(0, -p.length) : str;
-    },
+    fn: (s, cfg) => { const str = String(s ?? ''); const p = String(cfg.suffix ?? ''); return p && str.endsWith(p) ? str.slice(0, -p.length) : str; },
   },
   'text-strip-both': {
     label: '去前后缀', group: 'text',
@@ -136,8 +110,7 @@ export const PARSER_TEMPLATES = {
     ],
     fn: (s, cfg) => {
       let str = String(s ?? '');
-      const p = String(cfg.prefix ?? '');
-      const f = String(cfg.suffix ?? '');
+      const p = String(cfg.prefix ?? ''); const f = String(cfg.suffix ?? '');
       if (p && str.startsWith(p)) str = str.slice(p.length);
       if (f && str.endsWith(f)) str = str.slice(0, -f.length);
       return str;
@@ -147,27 +120,24 @@ export const PARSER_TEMPLATES = {
     label: '正则替换', group: 'text',
     configFields: [
       { name: 'pattern', label: '正则（不含首尾 /）', required: true, multiline: false },
-      { name: 'flags', label: '标志（g/i/m 等，可空）', required: false, multiline: false },
+      { name: 'flags', label: '标志（可空）', required: false, multiline: false },
       { name: 'replacement', label: '替换为（可空）', required: false, multiline: false },
     ],
     fn: (s, cfg) => {
-      try {
-        const re = new RegExp(cfg.pattern, cfg.flags || '');
-        return String(s ?? '').replace(re, cfg.replacement || '');
-      } catch (e) { return `（正则有误：${e.message}）`; }
+      try { return String(s ?? '').replace(new RegExp(cfg.pattern, cfg.flags || ''), cfg.replacement || ''); }
+      catch (e) { return `（正则有误：${e.message}）`; }
     },
   },
   'text-regex-extract': {
     label: '正则提取', group: 'text',
     configFields: [
       { name: 'pattern', label: '正则（不含首尾 /）', required: true, multiline: false },
-      { name: 'flags', label: '标志（g/i/m 等，可空）', required: false, multiline: false },
+      { name: 'flags', label: '标志（可空）', required: false, multiline: false },
       { name: 'group', label: '取第几个捕获组（0=整个匹配）', required: false, multiline: false },
     ],
     fn: (s, cfg) => {
       try {
-        const re = new RegExp(cfg.pattern, cfg.flags || '');
-        const m = String(s ?? '').match(re);
+        const m = String(s ?? '').match(new RegExp(cfg.pattern, cfg.flags || ''));
         if (!m) return '';
         const g = parseInt(cfg.group, 10);
         return m[Number.isNaN(g) ? 0 : g] ?? '';
@@ -183,45 +153,29 @@ export const PARSER_TEMPLATES = {
     ],
     fn: (s, cfg) => {
       const str = String(s ?? '');
-      const start = String(cfg.start ?? '');
-      const end = String(cfg.end ?? '');
+      const start = String(cfg.start ?? ''); const end = String(cfg.end ?? '');
       const include = String(cfg.include || '').toLowerCase() === 'true';
       const i = start ? str.indexOf(start) : 0;
       if (i < 0) return '';
       const j = end ? str.indexOf(end, i + start.length) : str.length;
       if (j < 0) return '';
-      const from = include ? i : i + start.length;
-      const to = include ? j + end.length : j;
-      return str.slice(from, to);
+      return str.slice(include ? i : i + start.length, include ? j + end.length : j);
     },
   },
   'jsonp-to-json': {
     label: 'JSONP → JSON', group: 'text', configFields: null,
-    fn: (s) => {
-      const str = String(s ?? '').trim();
-      const m = str.match(/^[^(]*\((.*)\);?\s*$/s);
-      return m ? m[1] : str;
-    },
+    fn: (s) => { const str = String(s ?? '').trim(); const m = str.match(/^[^(]*\((.*)\);?\s*$/s); return m ? m[1] : str; },
   },
-  'smart-parse': {
-    label: '智能 JSON 化', group: 'text', configFields: null,
-    fn: (s) => smartParseToString(String(s ?? '')),
-  },
+  'smart-parse': { label: '智能 JSON 化', group: 'text', configFields: null, fn: (s) => smartParseToString(String(s ?? '')) },
 
-  // ============ 时间 ============
-  'timestamp-ms': {
-    label: '当前毫秒时间戳（13 位）', group: 'time', configFields: null,
-    fn: () => String(Date.now()),
-  },
-  'timestamp-sec': {
-    label: '当前秒时间戳（10 位）', group: 'time', configFields: null,
-    fn: () => String(Math.floor(Date.now() / 1000)),
-  },
+  // ---------- 时间 ----------
+  'timestamp-ms': { label: '当前毫秒时间戳（13 位）', group: 'time', configFields: null, fn: () => String(Date.now()) },
+  'timestamp-sec': { label: '当前秒时间戳（10 位）', group: 'time', configFields: null, fn: () => String(Math.floor(Date.now() / 1000)) },
   'timestamp-custom': {
     label: '当前时间戳（自定义单位）', group: 'time',
     configFields: [
       { name: 'unit', label: '单位（ms / s / min / h / d）', required: true, multiline: false },
-      { name: 'offset', label: '偏移量（可空，整数，如 -60）', required: false, multiline: false },
+      { name: 'offset', label: '偏移量（可空，整数）', required: false, multiline: false },
     ],
     fn: (s, cfg) => {
       const unit = String(cfg.unit || 'ms').trim().toLowerCase();
@@ -238,19 +192,10 @@ export const PARSER_TEMPLATES = {
     },
   },
 
-  // ============ 数值运算 ============
-  'number-add-one': {
-    label: '数值 +1', group: 'math', configFields: null,
-    fn: (s) => { const n = Number(s); return Number.isNaN(n) ? `（不是数字：${s}）` : String(n + 1); },
-  },
-  'number-sub-one': {
-    label: '数值 -1', group: 'math', configFields: null,
-    fn: (s) => { const n = Number(s); return Number.isNaN(n) ? `（不是数字：${s}）` : String(n - 1); },
-  },
-  'number-mul-two': {
-    label: '数值 ×2', group: 'math', configFields: null,
-    fn: (s) => { const n = Number(s); return Number.isNaN(n) ? `（不是数字：${s}）` : String(n * 2); },
-  },
+  // ---------- 数值运算 ----------
+  'number-add-one': { label: '数值 +1', group: 'math', configFields: null, fn: (s) => { const n = Number(s); return Number.isNaN(n) ? `（不是数字：${s}）` : String(n + 1); } },
+  'number-sub-one': { label: '数值 -1', group: 'math', configFields: null, fn: (s) => { const n = Number(s); return Number.isNaN(n) ? `（不是数字：${s}）` : String(n - 1); } },
+  'number-mul-two': { label: '数值 ×2', group: 'math', configFields: null, fn: (s) => { const n = Number(s); return Number.isNaN(n) ? `（不是数字：${s}）` : String(n * 2); } },
   'number-custom': {
     label: '数值运算', group: 'math',
     configFields: [
@@ -258,31 +203,25 @@ export const PARSER_TEMPLATES = {
       { name: 'operand', label: '操作数', required: true, multiline: false },
     ],
     fn: (s, cfg) => {
-      const n = Number(s);
-      if (Number.isNaN(n)) return `（不是数字：${s}）`;
-      const operand = Number(cfg.operand);
-      if (Number.isNaN(operand)) return `（操作数不是数字：${cfg.operand}）`;
+      const n = Number(s); if (Number.isNaN(n)) return `（不是数字：${s}）`;
+      const op = Number(cfg.operand); if (Number.isNaN(op)) return `（操作数不是数字：${cfg.operand}）`;
       switch (String(cfg.op).trim()) {
-        case '+': return String(n + operand);
-        case '-': return String(n - operand);
-        case '*': return String(n * operand);
-        case '/': return String(n / operand);
+        case '+': return String(n + op);
+        case '-': return String(n - op);
+        case '*': return String(n * op);
+        case '/': return String(n / op);
         default: return `（未知运算符：${cfg.op}）`;
       }
     },
   },
 
-  // ============ 哈希 ============
-  'sha-1': { label: 'SHA-1', group: 'hash', configFields: null,
-    fn: async (s) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-1', toUint8(s)))) },
-  'sha-256': { label: 'SHA-256', group: 'hash', configFields: null,
-    fn: async (s) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', toUint8(s)))) },
-  'sha-384': { label: 'SHA-384', group: 'hash', configFields: null,
-    fn: async (s) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-384', toUint8(s)))) },
-  'sha-512': { label: 'SHA-512', group: 'hash', configFields: null,
-    fn: async (s) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-512', toUint8(s)))) },
+  // ---------- 哈希 ----------
+  'sha-1': { label: 'SHA-1', group: 'hash', configFields: null, fn: async (s) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-1', toUint8(s)))) },
+  'sha-256': { label: 'SHA-256', group: 'hash', configFields: null, fn: async (s) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', toUint8(s)))) },
+  'sha-384': { label: 'SHA-384', group: 'hash', configFields: null, fn: async (s) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-384', toUint8(s)))) },
+  'sha-512': { label: 'SHA-512', group: 'hash', configFields: null, fn: async (s) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-512', toUint8(s)))) },
 
-  // ============ 对称加密 ============
+  // ---------- 对称加密 ----------
   'aes-gcm-decrypt': {
     label: 'AES-GCM 解密', group: 'symmetric',
     configFields: [
@@ -348,9 +287,7 @@ export const PARSER_TEMPLATES = {
     fn: async (s, cfg) => {
       try {
         const key = await crypto.subtle.importKey('raw', b64ToBytes(cfg.key), 'AES-CTR', false, ['decrypt']);
-        const plain = await crypto.subtle.decrypt(
-          { name: 'AES-CTR', counter: b64ToBytes(cfg.counter), length: 64 }, key, b64ToBytes(s)
-        );
+        const plain = await crypto.subtle.decrypt({ name: 'AES-CTR', counter: b64ToBytes(cfg.counter), length: 64 }, key, b64ToBytes(s));
         return fromUint8(new Uint8Array(plain));
       } catch (e) { return `（AES-CTR 解密失败：${e.message || e}）`; }
     },
@@ -364,22 +301,19 @@ export const PARSER_TEMPLATES = {
     fn: async (s, cfg) => {
       try {
         const key = await crypto.subtle.importKey('raw', b64ToBytes(cfg.key), 'AES-CTR', false, ['encrypt']);
-        const enc = await crypto.subtle.encrypt(
-          { name: 'AES-CTR', counter: b64ToBytes(cfg.counter), length: 64 }, key, toUint8(s)
-        );
+        const enc = await crypto.subtle.encrypt({ name: 'AES-CTR', counter: b64ToBytes(cfg.counter), length: 64 }, key, toUint8(s));
         return bytesToB64(new Uint8Array(enc));
       } catch (e) { return `（AES-CTR 加密失败：${e.message || e}）`; }
     },
   },
 
-  // ============ 非对称加密 ============
+  // ---------- 非对称加密 ----------
   'rsa-oaep-decrypt': {
     label: 'RSA-OAEP 解密', group: 'asymmetric',
     configFields: [{ name: 'privateKey', label: 'RSA 私钥（PKCS8 Base64）', required: true, multiline: true }],
     fn: async (s, cfg) => {
       try {
-        const key = await crypto.subtle.importKey('pkcs8', b64ToBytes(cfg.privateKey),
-          { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']);
+        const key = await crypto.subtle.importKey('pkcs8', b64ToBytes(cfg.privateKey), { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']);
         const plain = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, key, b64ToBytes(s));
         return fromUint8(new Uint8Array(plain));
       } catch (e) { return `（RSA-OAEP 解密失败：${e.message || e}）`; }
@@ -390,8 +324,7 @@ export const PARSER_TEMPLATES = {
     configFields: [{ name: 'publicKey', label: 'RSA 公钥（SPKI Base64）', required: true, multiline: true }],
     fn: async (s, cfg) => {
       try {
-        const key = await crypto.subtle.importKey('spki', b64ToBytes(cfg.publicKey),
-          { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
+        const key = await crypto.subtle.importKey('spki', b64ToBytes(cfg.publicKey), { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['encrypt']);
         const enc = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, key, toUint8(s));
         return bytesToB64(new Uint8Array(enc));
       } catch (e) { return `（RSA-OAEP 加密失败：${e.message || e}）`; }
@@ -402,8 +335,7 @@ export const PARSER_TEMPLATES = {
     configFields: [{ name: 'privateKey', label: 'RSA 私钥（PKCS8 Base64）', required: true, multiline: true }],
     fn: async (s, cfg) => {
       try {
-        const key = await crypto.subtle.importKey('pkcs8', b64ToBytes(cfg.privateKey),
-          { name: 'RSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['decrypt']);
+        const key = await crypto.subtle.importKey('pkcs8', b64ToBytes(cfg.privateKey), { name: 'RSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['decrypt']);
         const plain = await crypto.subtle.decrypt({ name: 'RSA-PKCS1-v1_5' }, key, b64ToBytes(s));
         return fromUint8(new Uint8Array(plain));
       } catch (e) { return `（RSA-PKCS1 解密失败：${e.message || e}）`; }
@@ -414,20 +346,19 @@ export const PARSER_TEMPLATES = {
     configFields: [{ name: 'publicKey', label: 'RSA 公钥（SPKI Base64）', required: true, multiline: true }],
     fn: async (s, cfg) => {
       try {
-        const key = await crypto.subtle.importKey('spki', b64ToBytes(cfg.publicKey),
-          { name: 'RSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['encrypt']);
+        const key = await crypto.subtle.importKey('spki', b64ToBytes(cfg.publicKey), { name: 'RSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['encrypt']);
         const enc = await crypto.subtle.encrypt({ name: 'RSA-PKCS1-v1_5' }, key, toUint8(s));
         return bytesToB64(new Uint8Array(enc));
       } catch (e) { return `（RSA-PKCS1 加密失败：${e.message || e}）`; }
     },
   },
 
-  // ============ 响应上下文 ============
+  // ---------- 响应上下文 ----------
   'from-response': {
     label: '从响应取值', group: 'response',
     configFields: [
       { name: 'stepIndex', label: '请求序号（0 = 组内第 1 个）', required: true, multiline: false },
-      { name: 'path', label: 'JSON 路径（可空，如 data.content.role_level）', required: false, multiline: false },
+      { name: 'path', label: 'JSON 路径（可空）', required: false, multiline: false },
       { name: 'autoParse', label: '智能 JSON 化（true / false，默认 true）', required: false, multiline: false },
     ],
     fn: (s, cfg, ctx) => {
@@ -435,11 +366,9 @@ export const PARSER_TEMPLATES = {
       if (Number.isNaN(idx)) return '（stepIndex 不是数字）';
       const step = ctx?.steps?.[idx];
       if (!step?.response) return `（第 ${idx + 1} 个请求还没有响应）`;
-
       const autoParse = String(cfg.autoParse ?? 'true').toLowerCase() !== 'false';
       let value = step.response.body ?? '';
       const path = String(cfg.path || '').trim();
-
       if (path) {
         const keys = path.split('.').map((x) => x.trim()).filter(Boolean);
         for (let i = 0; i < keys.length; i++) {
@@ -447,66 +376,43 @@ export const PARSER_TEMPLATES = {
           if (typeof value === 'string') {
             if (autoParse) {
               const parsed = smartParse(value);
-              if (parsed === value) {
-                return `（路径 ${keys.slice(0, i).join('.') || '(根)'} 的值不是可解析的 JSON，无法访问 ${keys[i]}）`;
-              }
+              if (parsed === value) return `（路径 ${keys.slice(0, i).join('.') || '(根)'} 不是 JSON，无法访问 ${keys[i]}）`;
               value = parsed;
             } else {
               try { value = JSON.parse(value); }
-              catch { return `（路径 ${keys.slice(0, i).join('.') || '(根)'} 的值不是 JSON，无法访问 ${keys[i]}）`; }
+              catch { return `（路径 ${keys.slice(0, i).join('.') || '(根)'} 不是 JSON，无法访问 ${keys[i]}）`; }
             }
           }
           if (typeof value !== 'object') return '';
           value = value[keys[i]];
         }
       }
-
       if (value == null) return '';
-
-      if (autoParse && typeof value === 'string') {
-        return smartParseToString(value);
-      }
+      if (autoParse && typeof value === 'string') return smartParseToString(value);
       return typeof value === 'object' ? JSON.stringify(value) : String(value);
     },
   },
-  'from-current-input': {
-    label: '透传输入', group: 'response', configFields: null,
-    fn: (s) => String(s ?? ''),
-  },
+  'from-current-input': { label: '透传输入', group: 'response', configFields: null, fn: (s) => String(s ?? '') },
 
-  // ============ 自定义 ============
+  // ---------- JS 表达式（内置，渲染进程沙箱） ----------
   'js-expression': {
     label: 'JS 表达式', group: 'custom',
-    configFields: [
-      { name: 'expression', label: '表达式（可用 input / responses / currentStep）', required: true, multiline: true },
-    ],
+    configFields: [{
+      name: 'expression', label: '表达式代码', required: true, multiline: true,
+      helpText:
+        '可用变量：\n' +
+        '  input        — 上一步的输出（字符串）\n' +
+        '  responses    — 本轮已完成请求 [{ index, response }]\n' +
+        '  currentStep  — 当前请求索引\n' +
+        '\n必须 return 一个值。运行在渲染进程沙箱，不能 require。',
+      defaultValue: 'return input;',
+    }],
     fn: async (s, cfg, ctx) => {
       try {
-        const fn = new Function(
-          'input', 'responses', 'currentStep',
-          `"use strict"; return (${cfg.expression});`
-        );
+        const fn = new Function('input', 'responses', 'currentStep', `"use strict";\n${cfg.expression}\n`);
         const r = await fn(s, ctx?.steps || [], ctx?.currentStep);
         return r == null ? '' : (typeof r === 'object' ? JSON.stringify(r) : String(r));
-      } catch (e) {
-        return `（JS 表达式执行失败：${e.message || e}）`;
-      }
-    },
-  },
-  'main-process-script': {
-    label: '主进程脚本', group: 'custom',
-    configFields: [
-      { name: 'code', label: '脚本（可用 input / responses / currentStep / require；return 结果）', required: true, multiline: true },
-    ],
-    fn: async (s, cfg, ctx) => {
-      if (!window.electronAPI?.runParser) return '（主进程未开放 runParser）';
-      const r = await window.electronAPI.runParser({
-        code: cfg.code,
-        input: s,
-        ctx: { responses: ctx?.steps || [], currentStep: ctx?.currentStep },
-      });
-      if (!r?.ok) return `（主进程执行失败：${r?.error || '未知'}）`;
-      return r.value;
+      } catch (e) { return `（JS 表达式执行失败：${e.message || e}）`; }
     },
   },
 };
@@ -521,37 +427,184 @@ export const PARSER_GROUPS = {
   asymmetric: '非对称加密',
   response: '响应上下文',
   custom: '自定义',
+  external: '外部脚本',
 };
 
-export async function runParser(key, input, configMap = {}, context = { steps: [] }) {
-  const tpl = PARSER_TEMPLATES[key];
-  if (!tpl) return '（未知算法）';
-  const cfg = configMap[key];
-  if (tpl.configFields && !cfg) return `（请先到「算法 → 全局算法」配置 ${tpl.label}）`;
-  try { return await tpl.fn(input, cfg, context); }
-  catch (e) { return `（执行出错：${e.message || e}）`; }
+// ---------- 项目级自定义 JS 算法（存 localStorage，渲染进程执行） ----------
+export function buildCustomTemplates(customAlgorithms = {}) {
+  const templates = {};
+  for (const [key, def] of Object.entries(customAlgorithms || {})) {
+    if (!def?.code) continue;
+    templates[key] = {
+      label: def.label || key,
+      description: def.description || '',
+      group: 'custom',
+      configFields: null,
+      fn: async (s, cfg, ctx) => {
+        try {
+          const fn = new Function('input', 'responses', 'currentStep', `"use strict";\n${def.code}\n`);
+          const r = await fn(s, ctx?.steps || [], ctx?.currentStep);
+          return r == null ? '' : (typeof r === 'object' ? JSON.stringify(r) : String(r));
+        } catch (e) { return `（自定义算法执行失败：${e.message || e}）`; }
+      },
+    };
+  }
+  return templates;
 }
 
-export async function runParserChain(chain, input, configMap = {}, context = { steps: [] }) {
+// ---------- 外部脚本（存 localStorage，主进程执行，支持 module.exports） ----------
+export function buildScriptTemplates(scripts = {}) {
+  const templates = {};
+  for (const [name, def] of Object.entries(scripts || {})) {
+    if (!def?.code) continue;
+    templates[`script:${name}`] = {
+      label: def.label || name,
+      description: def.description || '',
+      group: 'external',
+      runtime: 'script',
+      scriptName: name,
+      configFields: (def.configFields || []).map((f) => ({
+        name: f.name,
+        label: f.label || f.name,
+        required: f.required !== false,
+        multiline: !!f.multiline,
+        placeholder: f.placeholder,
+        defaultValue: f.defaultValue,
+        helpText: f.helpText,
+      })),
+      fn: async (input, cfg, ctx) => {
+        if (!window.electronAPI?.script) return '（主进程未开放 script 接口）';
+        const r = await window.electronAPI.script.run({
+          code: def.code,
+          input: String(input ?? ''),
+          ctx: { responses: ctx?.steps || [], currentStep: ctx?.currentStep },
+          config: cfg || {},
+        });
+        if (!r?.ok) return `（脚本执行失败：${r?.error || '未知'}）`;
+        return r.value;
+      },
+    };
+  }
+  return templates;
+}
+
+// ---------- 链式执行 ----------
+function normalizeChainItem(item) {
+  if (typeof item === 'string') return { key: item };
+  if (item && typeof item === 'object' && item.key) return item;
+  return null;
+}
+
+/**
+ * 执行算法链
+ * 兼容旧的 `main-process-script`（已从内置移除），把它的 config.code 当作动态脚本执行
+ */
+export async function runParserChain(chain, input, configMap = {}, context = { steps: [] }, customTemplates = {}) {
   let value = input;
   const steps = [];
-  for (const key of chain) {
-    const tpl = PARSER_TEMPLATES[key];
-    if (!tpl) {
-      steps.push({ key, label: key, input: value, output: '（未知算法）' });
-      value = '（未知算法）';
+
+  console.log('[Parser][chain] start, input=', input, 'chain=', chain,
+    'customTemplatesKeys=', Object.keys(customTemplates));
+
+  for (const rawItem of chain || []) {
+    const item = normalizeChainItem(rawItem);
+    if (!item) {
+      steps.push({ key: '?', label: '?', input: value, output: '（无效链项）' });
       continue;
     }
-    const cfg = configMap[key];
+    const key = item.key;
+    let tpl = PARSER_TEMPLATES[key] || customTemplates[key];
+    console.log('[Parser][chain] 查找算法', key, '→', tpl ? `找到（${tpl.label}）` : '未找到');
+
+    if (!tpl && key.startsWith('script:')) {
+      const scriptName = key.slice('script:'.length);
+      tpl = fallbackScriptTemplate(scriptName);
+      console.log('[Parser][chain] 兜底查找脚本', scriptName, '→', tpl ? '找到' : '未找到');
+    }
+
+    if (!tpl && key === 'main-process-script' && item.config?.code && window.electronAPI?.script) {
+      const scriptCode = item.config.code;
+      tpl = {
+        label: '主进程脚本（兼容旧数据）',
+        configFields: null,
+        fn: async (inp, _cfg, ctx) => {
+          const r = await window.electronAPI.script.run({
+            code: scriptCode,
+            input: String(inp ?? ''),
+            ctx: { responses: ctx?.steps || [], currentStep: ctx?.currentStep },
+            config: {},
+          });
+          if (!r?.ok) return `（脚本执行失败：${r?.error || '未知'}）`;
+          return r.value;
+        },
+      };
+    }
+
+    if (!tpl) {
+      steps.push({ key, label: key, input: value, output: `（未知算法：${key}）` });
+      value = `（未知算法：${key}）`;
+      continue;
+    }
+
+    const cfg = item.config != null ? item.config : configMap[key];
+    const hasConfigFields = Array.isArray(tpl.configFields) && tpl.configFields.length > 0;
     let output;
-    if (tpl.configFields && !cfg) {
-      output = `（请先到「算法 → 全局算法」配置 ${tpl.label}）`;
+    if (hasConfigFields && !cfg) {
+      output = `（请先配置 ${tpl.label}）`;
+      console.log('[Parser][chain] 缺少配置', key, 'configFields=', tpl.configFields);
     } else {
-      try { output = await tpl.fn(value, cfg, context); }
-      catch (e) { output = `（执行出错：${e.message || e}）`; }
+      try {
+        console.log('[Parser][chain] 执行', key, 'input=', value, 'cfg=', cfg);
+        output = await tpl.fn(value, cfg, context);
+        console.log('[Parser][chain] 结果', key, '=>', output);
+      } catch (e) {
+        output = `（执行出错：${e.message || e}）`;
+        console.error('[Parser][chain] 执行抛错', key, e);
+      }
     }
     steps.push({ key, label: tpl.label, input: value, output });
     value = output;
   }
+
+  console.log('[Parser][chain] done, finalValue=', value);
   return { finalValue: value, steps };
+}
+
+function fallbackScriptTemplate(scriptName) {
+  try {
+    const raw = localStorage.getItem('har-scripts-v1');
+    const data = raw ? JSON.parse(raw) : {};
+    const def = data[scriptName];
+    if (!def?.code) {
+      console.warn('[Parser][chain] 兜底：localStorage 里没有脚本', scriptName, '现有:', Object.keys(data));
+      return null;
+    }
+    console.log('[Parser][chain] 兜底读取脚本成功:', scriptName);
+    return {
+      label: def.label || scriptName,
+      configFields: (def.configFields || []).map((f) => ({
+        name: f.name, label: f.label || f.name,
+        required: f.required !== false, multiline: !!f.multiline,
+        defaultValue: f.defaultValue,
+      })),
+      fn: async (inp, cfg, ctx) => {
+        if (!window.electronAPI?.script) return '（主进程未开放 script 接口）';
+        const r = await window.electronAPI.script.run({
+          code: def.code,
+          input: String(inp ?? ''),
+          ctx: { responses: ctx?.steps || [], currentStep: ctx?.currentStep },
+          config: cfg || {},
+        });
+        if (!r?.ok) return `（脚本执行失败：${r?.error || '未知'}）`;
+        return r.value;
+      },
+    };
+  } catch (e) {
+    console.warn('[Parser][chain] 兜底读取失败:', e);
+    return null;
+  }
+}
+export async function runParser(key, input, configMap = {}, context = { steps: [] }, customTemplates = {}) {
+  const { finalValue } = await runParserChain([{ key }], input, configMap, context, customTemplates);
+  return finalValue;
 }

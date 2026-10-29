@@ -5,25 +5,49 @@ import { resolveTemplate, hasTemplate } from './templateResolver';
 export async function applyAssignmentsToEntry(
   entry, assignments, configMap, context = { steps: [] }, options = {}
 ) {
-  const { preserveTemplates = false } = options;
+  const { preserveTemplates = false, customTemplates = {} } = options;
+
+  console.log('[Parser][apply] start', {
+    entryUid: entry._uid,
+    assignmentsCount: (assignments || []).length,
+    customTemplatesKeys: Object.keys(customTemplates),
+    configMapKeys: Object.keys(configMap),
+    preserveTemplates,
+  });
+
   let request = deepClone(entry.request || {});
   let queryChanged = false;
   const writableUpdates = [];
 
   for (const a of assignments || []) {
-    if (!Array.isArray(a.fieldPath) || a.fieldPath[0] !== 'request') continue;
+    if (!Array.isArray(a.fieldPath) || a.fieldPath[0] !== 'request') {
+      console.log('[Parser][apply] 跳过非 request 字段:', a.fieldPath);
+      continue;
+    }
     const pathInRequest = a.fieldPath.slice(1);
     const rawValue = getPath(request, pathInRequest);
-    if (rawValue == null) continue;
+    console.log('[Parser][apply] 处理字段', pathInRequest, '原值=', rawValue);
+    if (rawValue == null) {
+      console.log('[Parser][apply] 原值为 null，跳过');
+      continue;
+    }
 
     const rawString = String(rawValue);
     const templated = hasTemplate(rawString);
-    if (templated && preserveTemplates) continue;
+    if (templated && preserveTemplates) {
+      console.log('[Parser][apply] 有模板，preview 模式跳过');
+      continue;
+    }
 
     let value = templated ? resolveTemplate(rawString, context) : rawString;
     const chain = Array.isArray(a.chain) ? a.chain : [];
+    console.log('[Parser][apply] chain=', chain);
+
     if (chain.length > 0) {
-      const { finalValue } = await runParserChain(chain, value, configMap, context);
+      const { finalValue, steps } = await runParserChain(
+        chain, value, configMap, context, customTemplates
+      );
+      console.log('[Parser][apply] chain 执行结果:', { finalValue, steps });
       value = finalValue;
     }
 
@@ -33,6 +57,7 @@ export async function applyAssignmentsToEntry(
     if (!templated) {
       writableUpdates.push({ fieldPath: a.fieldPath, value });
     }
+    console.log('[Parser][apply] 字段写回:', pathInRequest, '=>', value);
   }
 
   if (!preserveTemplates) {
@@ -50,6 +75,11 @@ export async function applyAssignmentsToEntry(
   }
 
   if (queryChanged) request.url = rebuildUrlFromQuery(request);
+
+  console.log('[Parser][apply] done', {
+    finalPostDataText: request.postData?.text,
+    writableUpdates,
+  });
 
   return { request, writableUpdates };
 }

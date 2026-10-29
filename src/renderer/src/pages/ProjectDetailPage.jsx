@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Button, Card, Col, Row, Flex, Tag, Typography, Empty, Popconfirm,
   App as AntApp, Tabs, Modal, Input, Tooltip,
@@ -6,43 +6,52 @@ import {
 import {
   ArrowLeftOutlined, DeleteOutlined, FolderOpenOutlined,
   EditOutlined, ArrowUpOutlined, ArrowDownOutlined, ThunderboltOutlined,
-  ReloadOutlined,
+  ReloadOutlined, HolderOutlined,
 } from '@ant-design/icons';
 import { useProjects } from '../store/projectStore';
 import RequestWorkbench from '../components/RequestWorkbench';
 import AlgorithmConfigPanel from '../components/AlgorithmConfigPanel';
 import GroupRunnerModal from '../components/GroupRunnerModal';
+import usePersistentState from '../hooks/usePersistentState';
 
 const { Text } = Typography;
 
 export default function ProjectDetailPage({ projectId, onBack }) {
   const {
     projects, deleteProject, updateGroupRequests,
-    renameGroup, moveGroup, deleteGroup,
+    renameGroup, moveGroup, deleteGroup, reorderGroups,
     updateRequestFields, applyResponse, resetGroupRequests,
   } = useProjects();
   const { message } = AntApp.useApp();
-  const [activeGroupId, setActiveGroupId] = useState(null);
-  const [activeTab, setActiveTab] = useState('requests');
+
+  const [activeGroupId, setActiveGroupId] = usePersistentState(
+    `ui-proj-${projectId}-group`, null
+  );
+  const [activeTab, setActiveTab] = usePersistentState(
+    `ui-proj-${projectId}-tab`, 'requests'
+  );
 
   const [renamingGroup, setRenamingGroup] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [runnerGroup, setRunnerGroup] = useState(null);
+  const [draggingIndex, setDraggingIndex] = useState(null);
+  const [dropIndex, setDropIndex] = useState(null);
 
-  const project = useMemo(
-    () => projects.find((p) => p.id === projectId),
-    [projects, projectId]
-  );
+  const project = useMemo(() => projects.find((p) => p.id === projectId), [projects, projectId]);
+
+  useEffect(() => {
+    if (!project) return;
+    if (activeGroupId && !project.groups.find((g) => g.id === activeGroupId)) {
+      setActiveGroupId(null);
+    }
+  }, [activeGroupId, project, setActiveGroupId]);
 
   if (!project) {
-    return (
-      <Flex justify="center" align="center" style={{ height: '100%' }}>
-        <Empty description="项目不存在" />
-      </Flex>
-    );
+    return <Flex justify="center" align="center" style={{ height: '100%' }}><Empty description="项目不存在" /></Flex>;
   }
 
   const activeGroup = project.groups.find((g) => g.id === activeGroupId);
+  const projectProxy = project.proxy || '';
 
   const handleDeleteProject = () => {
     deleteProject(projectId);
@@ -66,6 +75,25 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     setRenamingGroup(null);
   };
 
+  const handleDragStart = (e, idx) => {
+    setDraggingIndex(idx);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(idx));
+  };
+  const handleDragOver = (e, idx) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dropIndex !== idx) setDropIndex(idx);
+  };
+  const handleDrop = (e, idx) => {
+    e.preventDefault();
+    const from = draggingIndex;
+    if (from != null && from !== idx) reorderGroups(projectId, from, idx);
+    setDraggingIndex(null);
+    setDropIndex(null);
+  };
+  const handleDragEnd = () => { setDraggingIndex(null); setDropIndex(null); };
+
   // ===== 请求组工作台 =====
   if (activeGroup) {
     const setGroupEntries = (updater) => {
@@ -80,13 +108,11 @@ export default function ProjectDetailPage({ projectId, onBack }) {
           onClick={() => setActiveGroupId(null)}>返回</Button>
         <Text strong>{project.name} / {activeGroup.name}</Text>
         <Tag>{activeGroup.requests.length} 条</Tag>
+        {projectProxy && <Tag color="blue">代理: {projectProxy}</Tag>}
         <div style={{ flex: 1 }} />
         <Tooltip title="恢复所有请求到初始状态（保留算法链）">
           <Button size="small" icon={<ReloadOutlined />}
-            onClick={() => {
-              resetGroupRequests(projectId, activeGroup.id);
-              message.success('已重置');
-            }}>
+            onClick={() => { resetGroupRequests(projectId, activeGroup.id); message.success('已重置'); }}>
             重置
           </Button>
         </Tooltip>
@@ -116,6 +142,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
           groupName={runnerGroup?.name}
           requests={runnerGroup?.requests || []}
           projectId={projectId}
+          projectProxy={projectProxy}
           onUpdateRequestFields={(uid, updates) =>
             updateRequestFields(projectId, activeGroup.id, uid, updates)
           }
@@ -135,105 +162,103 @@ export default function ProjectDetailPage({ projectId, onBack }) {
         <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>
         <Text strong style={{ fontSize: 18 }}>{project.name}</Text>
         <Tag color="blue">{project.groups.length} 组</Tag>
+        {projectProxy && <Tag color="green">代理: {projectProxy}</Tag>}
         <Text type="secondary" style={{ fontSize: 12 }}>
           创建于 {new Date(project.createdAt).toLocaleString()}
         </Text>
         <div style={{ flex: 1 }} />
-        <Popconfirm
-          title={`删除项目「${project.name}」？`}
-          description="此操作不可恢复"
-          onConfirm={handleDeleteProject}
-          okText="删除" cancelText="取消" okButtonProps={{ danger: true }}
-        >
+        <Popconfirm title={`删除项目「${project.name}」？`} description="此操作不可恢复"
+          onConfirm={handleDeleteProject} okText="删除" cancelText="取消"
+          okButtonProps={{ danger: true }}>
           <Button danger icon={<DeleteOutlined />}>删除项目</Button>
         </Popconfirm>
       </Flex>
 
-      <Tabs
-        activeKey={activeTab}
-        onChange={setActiveTab}
+      <Tabs activeKey={activeTab} onChange={setActiveTab}
         items={[
           {
-            key: 'requests',
-            label: '请求组',
+            key: 'requests', label: '请求组',
             children: project.groups.length === 0 ? (
               <Empty description="暂无请求组，去 HAR 页选择请求添加" />
             ) : (
               <Row gutter={[16, 16]}>
                 {project.groups.map((g, idx) => (
                   <Col key={g.id} xs={24} sm={12} md={8}>
-                    <Card
-                      hoverable
-                      onClick={() => setActiveGroupId(g.id)}
-                      title={<Text strong ellipsis style={{ maxWidth: 160 }}>{g.name}</Text>}
-                      extra={
-                        <Flex gap={2} onClick={(e) => e.stopPropagation()}>
-                          <Tag style={{ margin: 0 }}>{g.requests.length}</Tag>
-                          <Tooltip title="上移">
-                            <Button size="small" type="text" icon={<ArrowUpOutlined />}
-                              disabled={idx === 0}
-                              onClick={() => moveGroup(projectId, g.id, -1)} />
-                          </Tooltip>
-                          <Tooltip title="下移">
-                            <Button size="small" type="text" icon={<ArrowDownOutlined />}
-                              disabled={idx === project.groups.length - 1}
-                              onClick={() => moveGroup(projectId, g.id, 1)} />
-                          </Tooltip>
-                          <Tooltip title="重命名">
-                            <Button size="small" type="text" icon={<EditOutlined />}
-                              onClick={() => openRename(g)} />
-                          </Tooltip>
-                          <Tooltip title="按顺序执行">
-                            <Button size="small" type="text" icon={<ThunderboltOutlined />}
-                              onClick={() => setRunnerGroup(g)} />
-                          </Tooltip>
-                          <Popconfirm
-                            title={`删除请求组「${g.name}」？`}
-                            description="组内请求将被移除"
-                            onConfirm={() => handleDeleteGroup(g)}
-                            okText="删除" cancelText="取消"
-                            okButtonProps={{ danger: true }}
-                          >
-                            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-                          </Popconfirm>
-                        </Flex>
-                      }
+                    <div
+                      draggable
+                      onDragStart={(e) => handleDragStart(e, idx)}
+                      onDragOver={(e) => handleDragOver(e, idx)}
+                      onDrop={(e) => handleDrop(e, idx)}
+                      onDragEnd={handleDragEnd}
+                      style={{
+                        opacity: draggingIndex === idx ? 0.4 : 1,
+                        outline: dropIndex === idx && draggingIndex !== idx ? '2px dashed #1677ff' : 'none',
+                        borderRadius: 8,
+                        transition: 'opacity 0.15s',
+                      }}
                     >
-                      <Flex justify="space-between" align="center">
-                        <Text type="secondary" style={{ fontSize: 12 }}>点击打开工作台</Text>
-                        <Button size="small" type="primary" icon={<FolderOpenOutlined />}
-                          onClick={(e) => { e.stopPropagation(); setActiveGroupId(g.id); }}>
-                          打开
-                        </Button>
-                      </Flex>
-                    </Card>
+                      <Card
+                        hoverable
+                        onClick={() => setActiveGroupId(g.id)}
+                        title={
+                          <Flex align="center" gap={6}>
+                            <HolderOutlined style={{ color: '#bfbfbf', cursor: 'grab' }} />
+                            <Text strong ellipsis style={{ maxWidth: 160 }}>{g.name}</Text>
+                          </Flex>
+                        }
+                        extra={
+                          <Flex gap={2} onClick={(e) => e.stopPropagation()}>
+                            <Tag style={{ margin: 0 }}>{g.requests.length}</Tag>
+                            <Tooltip title="上移">
+                              <Button size="small" type="text" icon={<ArrowUpOutlined />}
+                                disabled={idx === 0}
+                                onClick={() => moveGroup(projectId, g.id, -1)} />
+                            </Tooltip>
+                            <Tooltip title="下移">
+                              <Button size="small" type="text" icon={<ArrowDownOutlined />}
+                                disabled={idx === project.groups.length - 1}
+                                onClick={() => moveGroup(projectId, g.id, 1)} />
+                            </Tooltip>
+                            <Tooltip title="重命名">
+                              <Button size="small" type="text" icon={<EditOutlined />}
+                                onClick={() => openRename(g)} />
+                            </Tooltip>
+                            <Tooltip title="按顺序执行">
+                              <Button size="small" type="text" icon={<ThunderboltOutlined />}
+                                onClick={() => setRunnerGroup(g)} />
+                            </Tooltip>
+                            <Popconfirm title={`删除请求组「${g.name}」？`}
+                              description="组内请求将被移除" onConfirm={() => handleDeleteGroup(g)}
+                              okText="删除" cancelText="取消" okButtonProps={{ danger: true }}>
+                              <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                            </Popconfirm>
+                          </Flex>
+                        }>
+                        <Flex justify="space-between" align="center">
+                          <Text type="secondary" style={{ fontSize: 12 }}>点击打开工作台</Text>
+                          <Button size="small" type="primary" icon={<FolderOpenOutlined />}
+                            onClick={(e) => { e.stopPropagation(); setActiveGroupId(g.id); }}>
+                            打开
+                          </Button>
+                        </Flex>
+                      </Card>
+                    </div>
                   </Col>
                 ))}
               </Row>
             ),
           },
           {
-            key: 'algorithms',
-            label: '项目算法',
+            key: 'algorithms', label: '项目算法',
             children: <AlgorithmConfigPanel projectId={projectId} />,
           },
-        ]}
-      />
+        ]} />
 
-      <Modal
-        title="重命名请求组"
-        open={!!renamingGroup}
-        onOk={confirmRename}
-        onCancel={() => setRenamingGroup(null)}
-        okText="保存" cancelText="取消" destroyOnHidden
-      >
-        <Input
-          value={renameValue}
-          onChange={(e) => setRenameValue(e.target.value)}
-          onPressEnter={confirmRename}
-          autoFocus
-          placeholder="输入新的请求组名称"
-        />
+      <Modal title="重命名请求组" open={!!renamingGroup}
+        onOk={confirmRename} onCancel={() => setRenamingGroup(null)}
+        okText="保存" cancelText="取消" destroyOnHidden>
+        <Input value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
+          onPressEnter={confirmRename} autoFocus placeholder="输入新的请求组名称" />
       </Modal>
 
       {runnerGroup && (
@@ -243,6 +268,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
           groupName={runnerGroup.name}
           requests={runnerGroup.requests || []}
           projectId={projectId}
+          projectProxy={projectProxy}
           onUpdateRequestFields={(uid, updates) =>
             updateRequestFields(projectId, runnerGroup.id, uid, updates)
           }

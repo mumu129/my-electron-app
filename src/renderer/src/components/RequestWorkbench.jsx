@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Splitter, Flex, Input, Select, Segmented, Typography, Tag,
   Button, Empty, Spin, App, Checkbox, Popover, Listy,
@@ -8,10 +8,10 @@ import RequestDetail from './RequestDetail';
 import ParsePreviewPanel from './ParsePreviewPanel';
 import useElementSize from '../hooks/useElementSize';
 import { useAlgorithms } from '../store/algorithmStore';
-import {
-  formatTime, statusColor, parseUrlParts, genUid,
-} from '../utils/har';
+import { useScripts } from '../store/scriptStore';
+import { formatTime, statusColor, parseUrlParts, genUid } from '../utils/har';
 import { applyAssignmentsToEntry } from '../utils/applyAssignments';
+import { buildCustomTemplates, buildScriptTemplates } from '../utils/parsers';
 
 const { Text } = Typography;
 
@@ -87,20 +87,29 @@ export default function RequestWorkbench({
   headerExtra = null, headerTopExtra = null, emptyNode = null,
 }) {
   const { message } = App.useApp();
-  const { getEffectiveConfigMap } = useAlgorithms();
+  const { getEffectiveConfigMap, getCustomAlgorithms } = useAlgorithms();
+  const { scripts } = useScripts();
   const [keyword, setKeyword] = useState('');
   const [method, setMethod] = useState('ALL');
   const [statusRange, setStatusRange] = useState('ALL');
   const [currentUid, setCurrentUid] = useState(null);
   const [selectedUids, setSelectedUids] = useState(() => new Set());
   const [parsePreview, setParsePreview] = useState(null);
+  const [activeTabKey, setActiveTabKey] = useState('general');
 
   const [listRef, { height: listHeight }, measure] = useElementSize();
 
+  // 用 ref 拿最新 scripts / config，防止 useEffect 依赖过多
+  const scriptsRef = useRef(scripts);
+  useEffect(() => { scriptsRef.current = scripts; }, [scripts]);
+  const getCfgMapRef = useRef(getEffectiveConfigMap);
+  useEffect(() => { getCfgMapRef.current = getEffectiveConfigMap; }, [getEffectiveConfigMap]);
+  const getCustomRef = useRef(getCustomAlgorithms);
+  useEffect(() => { getCustomRef.current = getCustomAlgorithms; }, [getCustomAlgorithms]);
+
   useEffect(() => {
     if (!entries.some((e) => !e._uid)) return;
-    const patched = entries.map((e) => e._uid ? e : { ...e, _uid: genUid() });
-    setEntries(patched);
+    setEntries(entries.map((e) => e._uid ? e : { ...e, _uid: genUid() }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries]);
 
@@ -114,6 +123,64 @@ export default function RequestWorkbench({
     [entries, currentUid]
   );
 
+  // ===== 切换请求时，若有 _parseAssignments，自动应用并刷新预览 =====
+  const assignmentsKey = current ? JSON.stringify(current._parseAssignments || []) : '';
+useEffect(() => {
+  if (!current) { setParsePreview(null); return; }
+  const assignments = current._parseAssignments || [];
+  if (assignments.length === 0) { setParsePreview(null); return; }
+
+  // 已经有针对当前请求的解析结果（且带 steps，表示刚应用过），不覆盖
+  if (parsePreview?.entry?._uid === current._uid && parsePreview?.steps?.length) {
+    return;
+  }
+
+  let cancelled = false;
+  (async () => {
+    try {
+      const configMap = getCfgMapRef.current(projectId);
+      const customTemplates = {
+        ...buildCustomTemplates(getCustomRef.current(projectId)),
+        ...buildScriptTemplates(scriptsRef.current),
+      };
+      const result = await applyAssignmentsToEntry(
+        current,
+        assignments,
+        configMap,
+        { steps: [] },
+        { preserveTemplates: true, customTemplates }
+      );
+      if (cancelled) return;
+
+      // ⬇ 兼容两种返回值：新版返回 { entry }，旧版返回 { request }
+      const previewEntry = result.entry
+        || { ...current, request: result.request };
+
+      if (!previewEntry?.request) {
+        console.warn('[Workbench] 自动加载：previewEntry.request 缺失', result);
+        setParsePreview(null);
+        return;
+      }
+
+      console.log('[Workbench] 自动加载解析预览:', current._uid);
+      setParsePreview({
+        entry: previewEntry,
+        chain: [],
+        steps: [],
+        fieldPath: null,
+        fieldLabel: null,
+        originalValue: null,
+        parsedValue: null,
+        autoLoaded: true,
+      });
+    } catch (e) {
+      console.error('[Workbench] 自动加载解析预览失败:', e);
+    }
+  })();
+
+  return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [current?._uid, assignmentsKey, projectId]);
   const methods = useMemo(() => {
     const set = new Set(entries.map((e) => e.request?.method).filter(Boolean));
     return [{ value: 'ALL', label: '全部方法' }].concat([...set].map((m) => ({ value: m, label: m })));
@@ -159,49 +226,74 @@ export default function RequestWorkbench({
     setEntries((prev) => prev.map((e) => (e._uid === uid ? { ...e, tags } : e)));
   };
 
- // 保持其他代码不变，只替换 handleParseResult：
-const handleParseResult = async (result) => {
-  if (!current) return;
-  try {
-    // 1) 记录算法链到 entry
-    const existing = current._parseAssignments || [];
-    const pathKey = JSON.stringify(result.fieldPath);
-    const newAssignments = existing.some((a) => JSON.stringify(a.fieldPath) === pathKey)
-      ? existing.map((a) => JSON.stringify(a.fieldPath) === pathKey
-          ? { ...a, chain: result.chain.map((c) => c.key) }
-          : a)
-      : [...existing, { fieldPath: result.fieldPath, chain: result.chain.map((c) => c.key) }];
+  const handleParseResult = async (result) => {
+    if (!current) return;
+    try {
+      let newAssignments;
+      if (result.cleared) {
+        newAssignments = (current._parseAssignments || []).filter(
+          (a) => JSON.stringify(a.fieldPath) !== JSON.stringify(result.fieldPath)
+        );
+      } else {
+        const existing = current._parseAssignments || [];
+        const pathKey = JSON.stringify(result.fieldPath);
+        newAssignments = existing.some((a) => JSON.stringify(a.fieldPath) === pathKey)
+          ? existing.map((a) => JSON.stringify(a.fieldPath) === pathKey
+              ? { ...a, chain: result.chain }
+              : a)
+          : [...existing, { fieldPath: result.fieldPath, chain: result.chain }];
+      }
 
-    setEntries((prev) =>
-      prev.map((e) =>
-        e._uid === current._uid ? { ...e, _parseAssignments: newAssignments } : e
-      )
-    );
+      setEntries((prev) =>
+        prev.map((e) =>
+          e._uid === current._uid ? { ...e, _parseAssignments: newAssignments } : e
+        )
+      );
 
-    // 2) 预览：preserveTemplates=true，模板字段保持原样，仅应用算法链
-    const configMap = getEffectiveConfigMap(projectId);
-    const { request: previewRequest } = await applyAssignmentsToEntry(
-      current,
-      newAssignments,
-      configMap,
-      { steps: [] },
-      { preserveTemplates: true }
-    );
+      if (newAssignments.length === 0) {
+        setParsePreview(null);
+        return;
+      }
 
-    setParsePreview({
-      entry: { ...current, request: previewRequest },
-      chain: result.chain,
-      steps: result.steps,
-      fieldPath: result.fieldPath,
-      fieldLabel: result.fieldLabel,
-      originalValue: result.originalValue,
-      parsedValue: result.parsedValue,
-    });
-  } catch (e) {
-    console.error('[RequestWorkbench] 应用解析失败:', e);
-    message.error(String(e?.message || e));
-  }
-};
+      const configMap = getEffectiveConfigMap(projectId);
+      const customTemplates = {
+        ...buildCustomTemplates(getCustomAlgorithms(projectId)),
+        ...buildScriptTemplates(scripts),
+      };
+
+      const targetAssignment = newAssignments.find(
+        (a) => JSON.stringify(a.fieldPath) === JSON.stringify(result.fieldPath)
+      );
+const result2 = await applyAssignmentsToEntry(
+  current,
+  targetAssignment ? [targetAssignment] : [],
+  configMap,
+  { steps: [] },
+  { preserveTemplates: true, customTemplates }
+);
+
+// ⬇ 兼容两种返回值
+const previewEntry = result2.entry
+  || { ...current, request: result2.request };
+
+setParsePreview({
+  entry: previewEntry,
+  chain: result.chain, steps: result.steps,
+  fieldPath: result.fieldPath, fieldLabel: result.fieldLabel,
+  originalValue: result.originalValue, parsedValue: result.parsedValue,
+});
+
+      setParsePreview({
+        entry: previewEntry,
+        chain: result.chain, steps: result.steps,
+        fieldPath: result.fieldPath, fieldLabel: result.fieldLabel,
+        originalValue: result.originalValue, parsedValue: result.parsedValue,
+      });
+    } catch (e) {
+      console.error('[RequestWorkbench] 应用解析失败:', e);
+      message.error(String(e?.message || e));
+    }
+  };
 
   const handleAddClick = () => {
     const selected = entries.filter((e) => selectedUids.has(e._uid));
@@ -216,7 +308,7 @@ const handleParseResult = async (result) => {
     const isCurrent = currentUid === entry._uid;
     const isChecked = selectedUids.has(entry._uid);
     const tags = entry.tags || [];
-    const hasAssignments = (entry._parseAssignments || []).length > 0;
+    const assignmentsCount = (entry._parseAssignments || []).length;
 
     return (
       <div onClick={() => setCurrentUid(entry._uid)}
@@ -237,7 +329,9 @@ const handleParseResult = async (result) => {
             style={{ margin: 0, minWidth: 40, textAlign: 'center' }}>{res.status}</Tag>
           <Text ellipsis style={{ width: 120, color: '#595959' }} title={parts.host}>{parts.host}</Text>
           <Text ellipsis style={{ flex: 1, minWidth: 0 }} title={parts.path}>{parts.path}</Text>
-          {hasAssignments && <Tag color="purple" style={{ margin: 0 }}>有算法</Tag>}
+          {assignmentsCount > 0 && (
+            <Tag color="purple" style={{ margin: 0 }}>算法 ×{assignmentsCount}</Tag>
+          )}
           <Text type="secondary" style={{ flexShrink: 0, width: 60, textAlign: 'right' }}>
             {formatTime(entry.time)}
           </Text>
@@ -329,8 +423,12 @@ const handleParseResult = async (result) => {
         <Splitter orientation="vertical">
           <Splitter.Panel defaultSize="55%" min="25%">
             {current ? (
-              <RequestDetail entry={current} inline projectId={projectId}
-                onParseResult={handleParseResult} />
+              <RequestDetail
+                entry={current} inline projectId={projectId}
+                onParseResult={handleParseResult}
+                activeKey={activeTabKey}
+                onTabChange={setActiveTabKey}
+              />
             ) : (
               <Flex justify="center" align="center" style={{ height: '100%' }}>
                 <Empty description="从左侧选择一条请求查看详情" />
@@ -338,8 +436,13 @@ const handleParseResult = async (result) => {
             )}
           </Splitter.Panel>
           <Splitter.Panel>
-            <ParsePreviewPanel parsed={parsePreview} projectId={projectId}
-              onClose={() => setParsePreview(null)} />
+            <ParsePreviewPanel
+              parsed={parsePreview}
+              projectId={projectId}
+              onClose={() => setParsePreview(null)}
+              activeKey={activeTabKey}
+              onTabChange={setActiveTabKey}
+            />
           </Splitter.Panel>
         </Splitter>
       </Splitter.Panel>

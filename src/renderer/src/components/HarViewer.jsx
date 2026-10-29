@@ -10,7 +10,7 @@ import { useProjects } from '../store/projectStore';
 
 const { Text } = Typography;
 
-export default function HarViewer({ entries, setEntries, fileName, setFileName }) {
+export default function HarViewer({ entries, setEntries, fileName, setFileName, flushHar }) {
   const { message } = App.useApp();
   const { projects } = useProjects();
   const [loading, setLoading] = useState(false);
@@ -29,6 +29,8 @@ export default function HarViewer({ entries, setEntries, fileName, setFileName }
       setEntries(processed);
       setFileName(file.name);
       message.success(`已导入 ${processed.length} 条请求`);
+      // 立即 flush 到 IDB
+      setTimeout(() => flushHar?.(), 100);
     } catch (e) {
       console.error('[HarViewer] 导入失败:', e);
       message.error(e.message || '导入失败');

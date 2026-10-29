@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
-const STORAGE_KEY = 'har-algorithms-v2';
+const STORAGE_KEY = 'har-algorithms-v3';
 const AlgorithmContext = createContext(null);
 
 function normalize(raw) {
@@ -13,17 +13,8 @@ export function AlgorithmProvider({ children }) {
   const [algorithms, setAlgorithms] = useState(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      const obj = raw ? JSON.parse(raw) : null;
-      const n = normalize(obj);
-      console.log('[AlgorithmStore] 初始化:', {
-        global: Object.keys(n.global),
-        projects: Object.keys(n.projects),
-      });
-      return n;
-    } catch (e) {
-      console.error('[AlgorithmStore] 读取失败:', e);
-      return { global: {}, projects: {} };
-    }
+      return normalize(raw ? JSON.parse(raw) : null);
+    } catch { return { global: {}, projects: {} }; }
   });
 
   useEffect(() => {
@@ -37,13 +28,8 @@ export function AlgorithmProvider({ children }) {
       global: { ...prev.global, [key]: { ...(prev.global[key] || {}), ...patch } },
     }));
   };
-
   const removeGlobalAlgorithm = (key) => {
-    setAlgorithms((prev) => {
-      const next = { ...prev.global };
-      delete next[key];
-      return { ...prev, global: next };
-    });
+    setAlgorithms((prev) => { const next = { ...prev.global }; delete next[key]; return { ...prev, global: next }; });
   };
 
   const updateProjectAlgorithm = (projectId, key, patch) => {
@@ -58,7 +44,6 @@ export function AlgorithmProvider({ children }) {
       },
     }));
   };
-
   const removeProjectAlgorithm = (projectId, key) => {
     setAlgorithms((prev) => {
       const proj = { ...(prev.projects[projectId] || {}) };
@@ -67,23 +52,62 @@ export function AlgorithmProvider({ children }) {
     });
   };
 
-  const clearProjectAlgorithms = (projectId) => {
+  const getCustomAlgorithms = (projectId) =>
+    algorithms.projects?.[projectId]?.customAlgorithms || {};
+
+  const addCustomAlgorithm = (projectId, key, def) => {
+    setAlgorithms((prev) => ({
+      ...prev,
+      projects: {
+        ...prev.projects,
+        [projectId]: {
+          ...(prev.projects[projectId] || {}),
+          customAlgorithms: {
+            ...(prev.projects[projectId]?.customAlgorithms || {}),
+            [key]: def,
+          },
+        },
+      },
+    }));
+  };
+
+  const updateCustomAlgorithm = (projectId, key, patch) => {
+    setAlgorithms((prev) => ({
+      ...prev,
+      projects: {
+        ...prev.projects,
+        [projectId]: {
+          ...(prev.projects[projectId] || {}),
+          customAlgorithms: {
+            ...(prev.projects[projectId]?.customAlgorithms || {}),
+            [key]: { ...(prev.projects[projectId]?.customAlgorithms?.[key] || {}), ...patch },
+          },
+        },
+      },
+    }));
+  };
+
+  const removeCustomAlgorithm = (projectId, key) => {
     setAlgorithms((prev) => {
-      const next = { ...prev.projects };
-      delete next[projectId];
-      return { ...prev, projects: next };
+      const cur = { ...(prev.projects[projectId]?.customAlgorithms || {}) };
+      delete cur[key];
+      return {
+        ...prev,
+        projects: {
+          ...prev.projects,
+          [projectId]: { ...(prev.projects[projectId] || {}), customAlgorithms: cur },
+        },
+      };
     });
   };
 
   const getEffectiveConfigMap = (projectId) => {
     const global = {};
-    Object.entries(algorithms.global || {}).forEach(([k, v]) => {
-      if (v?.config) global[k] = v.config;
-    });
+    Object.entries(algorithms.global || {}).forEach(([k, v]) => { if (v?.config) global[k] = v.config; });
     if (!projectId) return global;
     const proj = {};
     Object.entries(algorithms.projects?.[projectId] || {}).forEach(([k, v]) => {
-      if (v?.config) proj[k] = v.config;
+      if (k !== 'customAlgorithms' && v?.config) proj[k] = v.config;
     });
     return { ...global, ...proj };
   };
@@ -92,7 +116,8 @@ export function AlgorithmProvider({ children }) {
     <AlgorithmContext.Provider value={{
       algorithms,
       updateGlobalAlgorithm, removeGlobalAlgorithm,
-      updateProjectAlgorithm, removeProjectAlgorithm, clearProjectAlgorithms,
+      updateProjectAlgorithm, removeProjectAlgorithm,
+      getCustomAlgorithms, addCustomAlgorithm, updateCustomAlgorithm, removeCustomAlgorithm,
       getEffectiveConfigMap,
     }}>
       {children}
