@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain,net } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -61,6 +61,8 @@ app.whenReady().then(() => {
   })
 })
 
+
+
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
@@ -72,3 +74,35 @@ app.on('window-all-closed', () => {
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.
+// const { ipcMain, net } = require('electron');
+
+ipcMain.handle('http:request', async (_event, { url, method, headers, body }) => {
+  return new Promise((resolve) => {
+    try {
+      const request = net.request({ url, method: method || 'GET', redirect: 'follow' });
+      Object.entries(headers || {}).forEach(([k, v]) => request.setHeader(k, v));
+      request.on('response', (response) => {
+        const chunks = [];
+        response.on('data', (c) => chunks.push(Buffer.from(c)));
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf-8');
+          const respHeaders = Object.entries(response.headers || {})
+            .map(([k, v]) => ({ name: k, value: Array.isArray(v) ? v.join(', ') : String(v) }));
+          resolve({
+            status: response.statusCode,
+            statusText: response.statusMessage || '',
+            headers: respHeaders,
+            body: text,
+          });
+        });
+      });
+      request.on('error', (err) => {
+        resolve({ status: 0, statusText: 'error', body: String(err), headers: [] });
+      });
+      if (body) request.write(body);
+      request.end();
+    } catch (e) {
+      resolve({ status: 0, statusText: 'error', body: String(e), headers: [] });
+    }
+  });
+});

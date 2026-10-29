@@ -1,99 +1,155 @@
 import React, { useState } from 'react';
-import FloatButtons from './components/HAR';
+import { App as AntApp, Breadcrumb, Layout, Menu, theme } from 'antd';
 import {
-  DesktopOutlined,
-  PieChartOutlined,
-  UserOutlined,
+  FileTextOutlined, ProjectOutlined, ExperimentOutlined,
+  PlusOutlined, HistoryOutlined, SettingOutlined,
+  GlobalOutlined, DeploymentUnitOutlined,
 } from '@ant-design/icons';
-import { Breadcrumb, Layout, Menu, theme } from 'antd';
+import ErrorBoundary from './components/ErrorBoundary';
+import HarViewer from './components/HarViewer';
+import ProjectNewPage from './pages/ProjectNewPage';
+import ProjectHistoryPage from './pages/ProjectHistoryPage';
+import ProjectDetailPage from './pages/ProjectDetailPage';
+import GlobalAlgorithmPage from './pages/GlobalAlgorithmPage';
+import { ProjectProvider } from './store/projectStore';
+import { AlgorithmProvider } from './store/algorithmStore';
 
-const { Header, Content, Sider } = Layout;
-
-function getItem(label, key, icon, children) {
-  return { key, icon, children, label };
-}
+const { Header, Content, Footer } = Layout;
 
 const items = [
-  getItem('HAR', '1', <PieChartOutlined />),
-  getItem('新建项目', '2', <DesktopOutlined />),
-  getItem('User项目', 'sub1', <UserOutlined />, [
-    getItem('飞剑', '3'),
-    getItem('Bill', '4'),
-    getItem('Alex', '5'),
-  ]),
-  getItem('项目设置', '6', <DesktopOutlined />),
+  { key: 'har', label: 'HAR', icon: <FileTextOutlined /> },
+  {
+    key: 'project', label: '项目', icon: <ProjectOutlined />,
+    children: [{
+      type: 'group', label: '项目管理',
+      children: [
+        { key: 'project-new', label: '新建项目', icon: <PlusOutlined /> },
+        { key: 'project-history', label: '历史项目', icon: <HistoryOutlined /> },
+        { key: 'project-settings', label: '项目设置', icon: <SettingOutlined /> },
+      ],
+    }],
+  },
+  {
+    key: 'algorithm', label: '算法', icon: <ExperimentOutlined />,
+    children: [{
+      type: 'group', label: '算法配置',
+      children: [
+        { key: 'algorithm-global', label: '全局算法', icon: <GlobalOutlined /> },
+        { key: 'algorithm-project', label: '项目算法', icon: <DeploymentUnitOutlined /> },
+      ],
+    }],
+  },
 ];
 
-
-
-// ---------- 每个 key 对应的内容组件 ----------
-
-const NewProjectPage = () => <div>新建项目页面内容</div>;
-const FeijianPage = () => <div>飞剑页面内容</div>;
-const BillPage = () => <div>Bill is a cat.</div>;
-const AlexPage = () => <div>Alex 页面内容</div>;
-const SettingsPage = () => <div>项目设置页面内容</div>;
-
-const contentMap = {
-  '1': <FloatButtons />,
-  '2': <NewProjectPage />,
-  '3': <FeijianPage />,
-  '4': <BillPage />,
-  '5': <AlexPage />,
-  '6': <SettingsPage />,
+const BREADCRUMBS = {
+  har: [{ title: 'HAR' }],
+  'project-new': [{ title: '项目' }, { title: '新建项目' }],
+  'project-history': [{ title: '项目' }, { title: '历史项目' }],
+  'project-settings': [{ title: '项目' }, { title: '项目设置' }],
+  'algorithm-global': [{ title: '算法' }, { title: '全局算法' }],
+  'algorithm-project': [{ title: '算法' }, { title: '项目算法' }],
 };
 
-const App = () => {
-  const [collapsed, setCollapsed] = useState(false);
-  const [selectedKey, setSelectedKey] = useState('1');
+const LABELS = {
+  'project-settings': '项目设置',
+  'algorithm-global': '全局算法',
+  'algorithm-project': '项目算法',
+};
 
-  const {
-    token: { colorBgContainer, borderRadiusLG },
-  } = theme.useToken();
+function Placeholder({ title }) {
+  return (
+    <div style={{
+      height: '100%', display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center', color: '#8c8c8c',
+    }}>
+      <div style={{ fontSize: 16 }}>{title}</div>
+      <div style={{ fontSize: 12, marginTop: 6 }}>功能开发中</div>
+    </div>
+  );
+}
 
-  // 点击菜单更新选中 key
-  const handleMenuClick = ({ key }) => {
-    setSelectedKey(key);
+function AppInner() {
+  const [current, setCurrent] = useState('har');
+  const [viewingProjectId, setViewingProjectId] = useState(null);
+  const [harEntries, setHarEntries] = useState([]);
+  const [harFileName, setHarFileName] = useState('');
+
+  const { token: { colorBgContainer, borderRadiusLG } } = theme.useToken();
+  const currentYear = new Date().getFullYear();
+  const isHar = current === 'har';
+
+  const handleMenuClick = (e) => {
+    setViewingProjectId(null);
+    setCurrent(e.key);
   };
 
+  const renderContent = () => {
+    if (viewingProjectId) {
+      return (
+        <ProjectDetailPage projectId={viewingProjectId}
+          onBack={() => setViewingProjectId(null)} />
+      );
+    }
+    switch (current) {
+      case 'har':
+        return (
+          <HarViewer
+            entries={harEntries} setEntries={setHarEntries}
+            fileName={harFileName} setFileName={setHarFileName}
+          />
+        );
+      case 'project-new': return <ProjectNewPage />;
+      case 'project-history':
+        return <ProjectHistoryPage onOpenProject={(id) => setViewingProjectId(id)} />;
+      case 'algorithm-global': return <GlobalAlgorithmPage />;
+      default: return <Placeholder title={LABELS[current] || current} />;
+    }
+  };
 
+  const crumbs = viewingProjectId
+    ? [{ title: '项目' }, { title: '历史项目' }, { title: '项目详情' }]
+    : BREADCRUMBS[current] || [{ title: LABELS[current] || current }];
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider
-        collapsible
-        collapsed={collapsed}
-        onCollapse={(value) => setCollapsed(value)}
-      >
-        <div className="demo-logo-vertical" />
-        <Menu
-          theme="dark"
-          mode="inline"
-          defaultSelectedKeys={['1']}
-          defaultOpenKeys={['sub1']}   // 让 User项目 默认展开（可选）
-          items={items}
-          onClick={handleMenuClick}
-        />
-      </Sider>
-      <Layout>
-        <Header style={{ padding: 0, background: colorBgContainer }} />
-        <Content style={{ margin: '0 16px' }}>
-          
-          <div
-            style={{
-              padding: 24,
-              minHeight: 360,
-              background: colorBgContainer,
-              borderRadius: borderRadiusLG,
-            }}
-          >
-            {/* 根据当前选中 key 渲染对应组件 */}
-            {contentMap[selectedKey] || <div>请选择左侧菜单</div>}
-          </div>
-        </Content>
-      </Layout>
+    <Layout style={{ height: '100vh' }}>
+      <Header style={{
+        display: 'flex', alignItems: 'center', paddingInline: 16,
+        height: 56, lineHeight: '56px', background: colorBgContainer,
+        borderBottom: '1px solid #f0f0f0',
+      }}>
+        <div style={{ marginRight: 24, fontWeight: 600, fontSize: 16 }}>HAR 工作台</div>
+        <Menu mode="horizontal" selectedKeys={[current]} onClick={handleMenuClick}
+          items={items} style={{ flex: 1, minWidth: 0, borderBottom: 'none' }} />
+      </Header>
+
+      <Content style={{ minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {!isHar && <Breadcrumb style={{ margin: '12px 16px' }} items={crumbs} />}
+        <div style={{
+          flex: 1, minHeight: 0, overflow: 'hidden',
+          margin: isHar ? 0 : '0 16px',
+          background: isHar ? 'transparent' : colorBgContainer,
+          borderRadius: isHar ? 0 : borderRadiusLG,
+        }}>
+          <ErrorBoundary>{renderContent()}</ErrorBoundary>
+        </div>
+        {!isHar && <div style={{ height: 16 }} />}
+      </Content>
+
+      <Footer style={{ textAlign: 'center', padding: '6px 16px', fontSize: 12, color: '#8c8c8c' }}>
+        HAR 工作台 ©{currentYear}
+      </Footer>
     </Layout>
   );
-};
+}
 
-export default App;
+export default function App() {
+  return (
+    <AntApp>
+      <AlgorithmProvider>
+        <ProjectProvider>
+          <AppInner />
+        </ProjectProvider>
+      </AlgorithmProvider>
+    </AntApp>
+  );
+}
