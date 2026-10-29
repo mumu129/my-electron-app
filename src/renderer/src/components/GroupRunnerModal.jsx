@@ -10,7 +10,6 @@ import {
 import { buildHeadersFromEntry, buildBodyFromEntry } from '../utils/httpShared';
 import { formatBytes, statusColor } from '../utils/har';
 import { applyAssignmentsToEntry } from '../utils/applyAssignments';
-import { extractReferences } from '../utils/templateResolver';
 import { useAlgorithms } from '../store/algorithmStore';
 
 const { Text: AntText } = Typography;
@@ -38,6 +37,8 @@ async function sendRequest(entry) {
   const body = buildBodyFromEntry(req, method);
   const started = performance.now();
 
+  console.log('[SEND]', { url: req.url, method, headers, body });
+
   if (window.electronAPI?.httpRequest) {
     const r = await window.electronAPI.httpRequest({ url: req.url, method, headers, body });
     return { ...r, time: r.time || Math.round(performance.now() - started) };
@@ -55,9 +56,7 @@ async function sendRequest(entry) {
 
 export default function GroupRunnerModal({
   open, onClose, groupName, requests, projectId,
-  onUpdateRequestFields,   // (uid, writableUpdates) => void
-  onApplyResponse,         // (uid, response) => void
-  onReset,
+  onUpdateRequestFields, onApplyResponse, onReset,
 }) {
   const { message } = AntApp.useApp();
   const { getEffectiveConfigMap } = useAlgorithms();
@@ -82,30 +81,11 @@ export default function GroupRunnerModal({
   const configMapRef = useRef(configMap);
   useEffect(() => { configMapRef.current = configMap; }, [configMap]);
 
-  const declaredRefs = useMemo(() => {
-    const refs = new Set();
-    requests.forEach((r) => {
-      extractReferences(r.request?.url || '').forEach((x) => refs.add(x));
-      (r.request?.headers || []).forEach((h) => {
-        extractReferences(h.value || '').forEach((x) => refs.add(x));
-      });
-      if (r.request?.postData?.text) {
-        extractReferences(r.request.postData.text).forEach((x) => refs.add(x));
-      }
-    });
-    return [...refs];
-  }, [requests]);
-
   const initSteps = (list) => list.map((r, i) => ({
-    index: i,
-    uid: r._uid,
+    index: i, uid: r._uid,
     method: r.request?.method || 'GET',
     url: r.request?.url || '',
-    sentUrl: null,
-    status: 'pending',
-    response: null,
-    elapsed: null,
-    error: null,
+    sentUrl: null, status: 'pending', response: null, elapsed: null, error: null,
   }));
 
   useEffect(() => {
@@ -128,7 +108,7 @@ export default function GroupRunnerModal({
     setSteps(initSteps(requestsRef.current));
     setCurrentRound(roundIndex);
 
-    // 本轮上下文：存放本轮的响应，供后续请求 {{step.N.xxx}} 引用
+    // 本轮上下文：每个 step 的响应累积进去
     const context = { steps: [] };
 
     for (let i = 0; i < requestsRef.current.length; i++) {
@@ -143,7 +123,8 @@ export default function GroupRunnerModal({
       updateStep(i, { status: 'running', error: null });
 
       try {
-        // 1) 应用算法链 + 模板替换（用本轮 context）
+        context.currentStep = i;
+
         const { request: sentRequest, writableUpdates } =
           await applyAssignmentsToEntry(
             entry,
@@ -152,20 +133,17 @@ export default function GroupRunnerModal({
             context
           );
 
-        // 2) 只写回"算法演化字段"（不含模板的字段）
         if (writableUpdates.length > 0) {
           onUpdateRequestFields?.(entry._uid, writableUpdates);
         }
 
         updateStep(i, { sentUrl: sentRequest.url });
 
-        // 3) 发送
         const result = await sendRequest({ ...entry, request: sentRequest });
 
-        // 4) 响应进入 context，供后续请求引用
-        context.steps.push({ index: i, response: result });
+        // 把本次响应放进 context（索引与 entry index 对齐）
+        context.steps[i] = { index: i, response: result };
 
-        // 5) 响应写回 entry
         const nextResponse = {
           status: result.status,
           statusText: result.statusText,
@@ -177,11 +155,7 @@ export default function GroupRunnerModal({
         };
         onApplyResponse?.(entry._uid, nextResponse);
 
-        updateStep(i, {
-          status: 'success',
-          response: result,
-          elapsed: result.time,
-        });
+        updateStep(i, { status: 'success', response: result, elapsed: result.time });
 
         if (stopOnError && result.status >= 400) {
           setSteps((prev) => prev.map((s, idx) =>
@@ -222,10 +196,7 @@ export default function GroupRunnerModal({
 
   const stopAll = () => {
     stopRef.current = true;
-    if (loopTimerRef.current) {
-      clearTimeout(loopTimerRef.current);
-      loopTimerRef.current = null;
-    }
+    if (loopTimerRef.current) { clearTimeout(loopTimerRef.current); loopTimerRef.current = null; }
     setRunning(false);
   };
 
@@ -237,11 +208,9 @@ export default function GroupRunnerModal({
     message.success('已恢复到初始请求');
   };
 
-  useEffect(() => {
-    return () => {
-      stopRef.current = true;
-      if (loopTimerRef.current) clearTimeout(loopTimerRef.current);
-    };
+  useEffect(() => () => {
+    stopRef.current = true;
+    if (loopTimerRef.current) clearTimeout(loopTimerRef.current);
   }, []);
 
   const requestCount = requestsRef.current.length;
@@ -289,24 +258,12 @@ export default function GroupRunnerModal({
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="执行逻辑"
+        message="算法链上下文"
         description={
           <div style={{ fontSize: 12 }}>
-            <div>• 每次发送前，对每个字段：</div>
-            <div style={{ paddingLeft: 16 }}>
-              ① 若字段值是 <code>{'{{step.N.path}}'}</code>，用本轮第 N 个请求的<b>最新</b>响应替换（临时，不写回）
-            </div>
-            <div style={{ paddingLeft: 16 }}>
-              ② 若字段配置了算法链（如 +1），应用算法链（写回 entry，下轮在此基础上继续）
-            </div>
-            {declaredRefs.length > 0 && (
-              <div style={{ marginTop: 6 }}>
-                当前组内引用：
-                {declaredRefs.map((r) => (
-                  <Tag key={r} style={{ marginLeft: 4 }}>{`{{${r}}}`}</Tag>
-                ))}
-              </div>
-            )}
+            「从响应取值」算法可引用本轮任意前序请求的响应（输入请求序号，从 0 开始）；
+            「JS 表达式」「主进程脚本」可直接操作 <code>responses</code> 数组。
+            链里每一步的输出是下一步的输入。
           </div>
         }
       />
@@ -321,14 +278,11 @@ export default function GroupRunnerModal({
                 <Tag style={{ minWidth: 28, textAlign: 'center', margin: 0 }}>{s.index + 1}</Tag>
                 <Tag color={METHOD_COLOR[s.method] || 'default'} style={{ margin: 0 }}>{s.method}</Tag>
                 {statusTag(s.status)}
-                <AntText ellipsis style={{ flex: 1, minWidth: 0, fontSize: 12 }}
-                  title={s.sentUrl || s.url}>
+                <AntText ellipsis style={{ flex: 1, minWidth: 0, fontSize: 12 }} title={s.sentUrl || s.url}>
                   {s.sentUrl || s.url}
                 </AntText>
                 {s.response && (
-                  <Tag color={statusColor(s.response.status)} style={{ margin: 0 }}>
-                    {s.response.status}
-                  </Tag>
+                  <Tag color={statusColor(s.response.status)} style={{ margin: 0 }}>{s.response.status}</Tag>
                 )}
                 {s.elapsed != null && (
                   <AntText type="secondary" style={{ fontSize: 11 }}>
@@ -347,10 +301,7 @@ export default function GroupRunnerModal({
                   </Button>
                 )}
               </Flex>
-              {s.error && (
-                <Alert type="error" showIcon
-                  style={{ marginTop: 6, marginLeft: 60 }} message={s.error} />
-              )}
+              {s.error && <Alert type="error" showIcon style={{ marginTop: 6, marginLeft: 60 }} message={s.error} />}
               {expandedStep === s.index && s.response && (
                 <div style={{ marginTop: 6, marginLeft: 60 }}>
                   <AntText type="secondary" style={{ fontSize: 11 }}>响应头</AntText>
