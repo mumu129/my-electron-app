@@ -1,4 +1,5 @@
-import React, { useEffect, useState, createContext, useContext } from 'react';
+// src/renderer/src/App.jsx
+import React, { useEffect, useState } from 'react';
 import { App as AntApp, Breadcrumb, Layout, Menu, theme, Spin, Flex } from 'antd';
 import {
   FileTextOutlined, ProjectOutlined, ExperimentOutlined,
@@ -18,11 +19,10 @@ import { ScriptProvider } from './store/scriptStore';
 import usePersistentState from './hooks/usePersistentState';
 import useIDBState from './hooks/useIDBState';
 
-const { Header, Content, Footer } = Layout;
+// ✅ 引入新的 store
+import { ReplayContext } from './store/replayStore';
 
-// 新建 Context 用于发送到重发台
-export const ReplayContext = createContext(null);
-export const useReplay = () => useContext(ReplayContext);
+const { Header, Content, Footer } = Layout;
 
 const items = [
   { key: 'har', label: 'HAR', icon: <FileTextOutlined /> },
@@ -97,7 +97,8 @@ function AppInner() {
         return (
           <HarViewer entries={harEntries} setEntries={setHarEntries} fileName={harFileName} setFileName={setHarFileName} flushHar={harMeta.flush} />
         );
-      case 'replay': return <ReplayPage initialData={replayData} />;
+      // ✅ 核心修复：加上 key，确保数据变更时 ReplayPage 整个组件重新挂载并刷新
+      case 'replay': return <ReplayPage key={replayData?._id || 'replay'} initialData={replayData} />;
       case 'project-new': return <ProjectNewPage />;
       case 'project-history': return <ProjectHistoryPage onOpenProject={(id) => setViewingProjectId(id)} />;
       case 'project-settings': return <ProjectSettingsPage />;

@@ -1,3 +1,4 @@
+// src/preload/index.js
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
@@ -11,6 +12,9 @@ const api = {
   },
   crypto: {
     transform: (payload) => ipcRenderer.invoke('crypto:transform', payload),
+  },
+  script: {
+    run: (payload) => ipcRenderer.invoke('script:run', payload),
   },
   workarea: {
     setPath: () => ipcRenderer.invoke('workarea:set-path'),

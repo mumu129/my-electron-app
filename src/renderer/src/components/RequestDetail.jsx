@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { Flex, Typography, Tag, Button, Empty, Space, App, Segmented } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
-import { useReplay } from '../App';
+import { useReplay } from '../store/replayStore';
 import HackvertorEditor from './HackvertorEditor';
 
 const { Text } = Typography;
@@ -12,42 +12,95 @@ export default function RequestDetail({ entry, onUpdateRequest }) {
   const { sendToReplay } = useReplay();
   const [activeTab, setActiveTab] = useState('request');
 
-  if (!entry) return <Flex justify="center" align="center" style={{ height: '100%' }}><Empty description="未选择请求" /></Flex>;
+  const req = entry?.request || {};
+  const res = entry?.response || {};
 
-  const req = entry.request || {};
-  const res = entry.response || {};
-
+  // 生成原始请求报文
   const getRawRequest = () => {
-    let s = `${req.method} ${req.url} HTTP/1.1\n`;
-    (req.headers || []).forEach(h => { if (h.name) s += `${h.name}: ${h.value}\n`; });
+    if (!entry) return '';
+    let s = `${req.method || 'GET'} ${req.url || ''} HTTP/1.1\n`;
+    const seenHeaders = new Set();
+    const uniqueHeaders = [];
+    const headersArr = req.headers || [];
+    for (let i = headersArr.length - 1; i >= 0; i--) {
+      const h = headersArr[i];
+      if (h && h.name && !seenHeaders.has(h.name.toLowerCase())) {
+        seenHeaders.add(h.name.toLowerCase());
+        uniqueHeaders.unshift(h);
+      }
+    }
+    uniqueHeaders.forEach(h => { s += `${h.name}: ${h.value}\n`; });
     s += '\n';
-    if (req.postData?.text) s += req.postData.text;
+    
+    let body = req.postData?.text || '';
+    if (body.match(/^[A-Z]+\s+.*?\s+HTTP\/1\.1/)) {
+      const firstLineEnd = body.indexOf('\n\n');
+      if (firstLineEnd > -1) body = body.slice(firstLineEnd + 2);
+    }
+    if (body) s += body;
     return s;
   };
 
-  const getRawResponse = () => {
-    let s = `HTTP/1.1 ${res.status} ${res.statusText}\n`;
-    (res.headers || []).forEach(h => { if (h.name) s += `${h.name}: ${h.value}\n`; });
-    s += '\n';
-    if (res.content?.text) s += res.content.text;
-    return s;
-  };
+  const [localRaw, setLocalRaw] = useState(getRawRequest);
+  const [prevUid, setPrevUid] = useState(entry?._uid);
 
-  const rawReq = getRawRequest();
-  const rawRes = getRawResponse();
+  // 核心修复：不再用 useEffect（它是异步的，会导致点击太快发送旧数据）。改用渲染期同步更新。
+  if (entry?._uid !== prevUid) {
+    setPrevUid(entry?._uid);
+    setLocalRaw(getRawRequest());
+  }
+
+  if (!entry) {
+    return <Flex justify="center" align="center" style={{ height: '100%' }}><Empty description="未选择请求" /></Flex>;
+  }
+
+  let rawRes = `HTTP/1.1 ${res.status} ${res.statusText}\n`;
+  (res.headers || []).forEach(h => { if (h.name) rawRes += `${h.name}: ${h.value}\n`; });
+  rawRes += '\n';
+  if (res.content?.text) rawRes += res.content.text;
+
+  const parseRawRequest = (rawText) => {
+    const lines = rawText.replace(/\r\n/g, '\n').split('\n');
+    let method = 'GET', url = '', headers = [], body = '', idx = 0;
+    if (lines.length > 0) {
+      const firstLine = lines[0].trim();
+      if (firstLine) {
+        const parts = firstLine.split(/\s+/);
+        if (parts.length >= 2) { method = parts[0]; url = parts[1]; }
+        else if (parts.length === 1) { url = parts[0]; }
+      }
+      idx = 1;
+    }
+    for (; idx < lines.length; idx++) {
+      const line = lines[idx];
+      if (!line.trim()) { idx++; break; }
+      const colon = line.indexOf(':');
+      if (colon > 0) headers.push({ name: line.substring(0, colon).trim(), value: line.substring(colon + 1).trim() });
+    }
+    if (idx < lines.length) body = lines.slice(idx).join('\n');
+    return { method, url, headers, body };
+  };
 
   const handleSendToReplay = () => {
     sendToReplay({
+      _id: Date.now().toString(), // 给个唯一 id 强制刷新
       method: req.method || 'GET',
       url: req.url || '',
-      rawText: rawReq
+      rawText: localRaw
     });
     message.success('已推送至重发台');
   };
 
   const handleSaveRequest = (newText) => {
-    if (onUpdateRequest) {
-      onUpdateRequest(entry._uid, [{ fieldPath: 'request.postData.text', value: newText }]);
+    setLocalRaw(newText); 
+    if (onUpdateRequest && entry) {
+      const parsed = parseRawRequest(newText);
+      onUpdateRequest(entry._uid, [
+        { fieldPath: 'request.method', value: parsed.method },
+        { fieldPath: 'request.url', value: parsed.url },
+        { fieldPath: 'request.headers', value: parsed.headers },
+        { fieldPath: 'request.postData.text', value: parsed.body }
+      ]);
     }
   };
 
@@ -75,7 +128,7 @@ export default function RequestDetail({ entry, onUpdateRequest }) {
         
         <div style={{ flex: 1, minHeight: 0, padding: 16 }}>
           {activeTab === 'request' ? (
-            <HackvertorEditor value={rawReq} onChange={handleSaveRequest} readOnly={false} />
+            <HackvertorEditor value={localRaw} onChange={handleSaveRequest} readOnly={false} />
           ) : (
             <HackvertorEditor value={rawRes} readOnly={true} />
           )}

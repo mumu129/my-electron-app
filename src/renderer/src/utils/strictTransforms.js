@@ -1,585 +1,229 @@
 // src/renderer/src/utils/strictTransforms.js
-/**
- * 严格算法库
- * - 不做宽容处理：失败即抛错
- * - 双向算法明确了 decodeLabel 和 encodeLabel，消除方向歧义
- */
-
-/* ==================== 基础工具 ==================== */
 const enc = new TextEncoder()
 const dec = new TextDecoder('utf-8', { fatal: true })
+const b64ToBytes = (b64) => new Uint8Array(atob(b64).split('').map(c => c.charCodeAt(0)))
+const bytesToB64 = (bytes) => btoa(String.fromCharCode.apply(null, new Uint8Array(bytes)))
+const hexToBytes = (hex) => new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)))
+const bytesToHex = (bytes) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
 
-function utf8ToBytes(s) { return enc.encode(s) }
-function bytesToUtf8(bytes) { return dec.decode(new Uint8Array(bytes)) }
-function bytesToHex(bytes) {
-  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
-}
-function hexToBytes(hex) {
-  const s = String(hex).replace(/\s/g, '')
-  if (s.length === 0) throw new Error('空 hex')
-  if (s.length % 2 !== 0) throw new Error('hex 长度必须为偶数')
-  if (!/^[0-9a-fA-F]+$/.test(s)) throw new Error('包含非 hex 字符')
-  const out = new Uint8Array(s.length / 2)
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.substr(i * 2, 2), 16)
-  return out
-}
-function bytesToBase64(bytes) {
-  let bin = ''
-  const arr = new Uint8Array(bytes)
-  for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i])
-  return btoa(bin)
-}
-function base64ToBytes(b64) {
-  const s = String(b64).replace(/\s/g, '')
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(s)) throw new Error('非法 base64 字符')
-  if (s.length % 4 !== 0 && !/=+$/.test(s)) throw new Error('base64 长度非法')
-  const bin = atob(s)
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
-}
-
-/* ==================== 主进程调用封装 ==================== */
 async function callCrypto(type, input, options = {}) {
-  if (!window.electronAPI?.crypto?.transform) {
-    throw new Error('主进程未开放 crypto 接口')
-  }
+  if (!window.electronAPI?.crypto?.transform) throw new Error('主进程未开放 crypto 接口')
   const r = await window.electronAPI.crypto.transform({ type, input, options })
   if (!r?.ok) throw new Error(r?.error || `${type} 失败`)
   return r.value
 }
 
-/* ==================== 类型推断 ==================== */
-export function inferType(value) {
-  if (value == null) return 'null'
-  const s = String(value)
-  if (s === '') return 'string(空)'
-  if (/^-?\d+(\.\d+)?$/.test(s)) {
-    const n = Number(s)
-    if (!Number.isNaN(n)) return Number.isInteger(n) ? 'number(int)' : 'number(float)'
-  }
-  if (s === 'true' || s === 'false') return 'boolean'
-  try {
-    const p = JSON.parse(s)
-    if (p && typeof p === 'object') return Array.isArray(p) ? 'json(array)' : 'json(object)'
-  } catch { /* not json */ }
-  return 'string'
-}
-
-export function typeLabel(value) {
-  if (value == null) return 'Null'
-  const s = String(value)
-  if (s === '') return 'String(空)'
-  try {
-    const p = JSON.parse(s)
-    if (p && typeof p === 'object') return 'JSON'
-  } catch { /* not json */ }
-  if (/^-?\d+(\.\d+)?$/.test(s)) return 'Number'
-  if (s === 'true' || s === 'false') return 'Boolean'
-  return 'String'
-}
-
-/* ==================== 算法定义表 ==================== */
 export const TRANSFORM_GROUPS = {
-  encoding: '编码/解码',
-  json: 'JSON/表单',
-  compress: '压缩',
-  hash: '哈希（单向）',
-  symmetric: '对称加密',
-  asymmetric: '非对称加密',
-  time: '时间',
-  number: '数值',
-  text: '文本',
-  chain: '请求链',
-  app: '应用专用',
+  encoding: '编码 / 压缩',
+  format: '格式处理 (JSON/Cookie/JWT)',
+  crypto: '对称 / 非对称加密',
+  hash: '哈希 / 签名',
+  time: '时间戳处理',
+  number: '数值计算',
+  app: '应用与联动',
 }
 
 export const TRANSFORMS = {
-  /* ---------- 编码 ---------- */
-  'utf8-base64': {
-    label: 'UTF-8 与 Base64',
-    decodeLabel: 'Base64 解码为 UTF-8',
-    encodeLabel: 'UTF-8 编码为 Base64',
-    group: 'encoding',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(base64)' } },
-    canDecode: (v) => { try { base64ToBytes(v); return true } catch { return false } },
-    canEncode: (v) => typeof v === 'string',
-    decode: (v) => bytesToUtf8(base64ToBytes(v)),
-    encode: (v) => bytesToBase64(utf8ToBytes(v)),
+  /* ---------- 编码 / 压缩 ---------- */
+  'b64': { 
+    label: 'UTF-8 与 Base64', decodeLabel: 'Base64 解码为 UTF-8', encodeLabel: 'UTF-8 编码为 Base64', group: 'encoding', direction: 'both',
+    decode: (v) => dec.decode(b64ToBytes(v)), encode: (v) => bytesToB64(enc.encode(v)) 
   },
-  'utf8-hex': {
-    label: 'UTF-8 与 Hex',
-    decodeLabel: 'Hex 解码为 UTF-8',
-    encodeLabel: 'UTF-8 编码为 Hex',
-    group: 'encoding',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(hex)' } },
-    canDecode: (v) => /^[0-9a-fA-F]+$/.test(String(v).replace(/\s/g, '')) && String(v).replace(/\s/g, '').length % 2 === 0,
-    canEncode: (v) => typeof v === 'string',
-    decode: (v) => bytesToUtf8(hexToBytes(v)),
-    encode: (v) => bytesToHex(utf8ToBytes(v)),
+  'hex': { 
+    label: 'UTF-8 与 Hex', decodeLabel: 'Hex 解码为 UTF-8', encodeLabel: 'UTF-8 编码为 Hex', group: 'encoding', direction: 'both',
+    decode: (v) => dec.decode(hexToBytes(v)), encode: (v) => bytesToHex(enc.encode(v)) 
   },
-  'base64-hex': {
-    label: 'Base64 与 Hex',
-    decodeLabel: 'Base64 解码为 Hex',
-    encodeLabel: 'Hex 编码为 Base64',
-    group: 'encoding',
-    direction: 'both',
-    types: { decode: { out: 'String(hex)' }, encode: { out: 'String(base64)' } },
-    canDecode: (v) => { try { base64ToBytes(v); return true } catch { return false } },
-    canEncode: (v) => /^[0-9a-fA-F]+$/.test(String(v).replace(/\s/g, '')) && String(v).replace(/\s/g, '').length % 2 === 0,
-    decode: (v) => bytesToHex(base64ToBytes(v)),
-    encode: (v) => bytesToBase64(hexToBytes(v)),
+  'url': { 
+    label: 'URL 编码与解码', decodeLabel: 'URL 解码', encodeLabel: 'URL 编码', group: 'encoding', direction: 'both',
+    decode: (v) => decodeURIComponent(v), encode: (v) => encodeURIComponent(v) 
   },
-  'url': {
-    label: 'URL 编码与解码',
-    decodeLabel: 'URL 解码',
-    encodeLabel: 'URL 编码',
-    group: 'encoding',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(url-encoded)' } },
-    canDecode: (v) => /%[0-9A-Fa-f]{2}/.test(String(v)),
-    canEncode: (v) => typeof v === 'string',
-    decode: (v) => decodeURIComponent(v),
-    encode: (v) => encodeURIComponent(v),
+  'gzip': { 
+    label: 'GZIP 压缩与解压', decodeLabel: 'GZIP 解压', encodeLabel: 'GZIP 压缩', group: 'encoding', direction: 'both',
+    decode: async (v) => await callCrypto('gzip-decompress', v), encode: async (v) => await callCrypto('gzip-compress', v) 
   },
 
-  /* ---------- JSON / 表单 ---------- */
-  'json': {
-    label: 'JSON 解析与序列化',
-    decodeLabel: 'JSON 格式化（美化）',
-    encodeLabel: 'JSON 序列化（压缩）',
-    group: 'json',
-    direction: 'both',
-    types: { decode: { out: 'JSON' }, encode: { out: 'String(json)' } },
-    canDecode: (v) => { try { const p = JSON.parse(v); return p && typeof p === 'object' } catch { return false } },
-    canEncode: (v) => typeof v === 'string' && /^[[{]/.test(v.trim()),
-    decode: (v) => { const parsed = JSON.parse(v); if (!parsed || typeof parsed !== 'object') throw new Error('不是对象/数组'); return JSON.stringify(parsed, null, 2); },
-    encode: (v) => JSON.stringify(JSON.parse(v)),
+  /* ---------- 格式处理 ---------- */
+  'json': { 
+    label: 'JSON 美化与压缩', decodeLabel: 'JSON 格式化', encodeLabel: 'JSON 压缩', group: 'format', direction: 'both',
+    decode: (v) => JSON.stringify(JSON.parse(v), null, 2), encode: (v) => JSON.stringify(JSON.parse(v)) 
   },
   'form-json': {
-    label: '表单与 JSON',
-    decodeLabel: '表单 转 JSON',
-    encodeLabel: 'JSON 转 表单',
-    group: 'json',
-    direction: 'both',
-    types: { decode: { out: 'JSON' }, encode: { out: 'String(form)' } },
-    canDecode: (v) => /^[^=&]+=[^&]*(&[^=&]+=[^&]*)*$/.test(String(v).trim()),
-    canEncode: (v) => { try { const p = JSON.parse(v); return p && typeof p === 'object' && !Array.isArray(p) } catch { return false } },
-    decode: (v) => { const params = new URLSearchParams(String(v)); const obj = {}; for (const [k, val] of params) obj[k] = val; return JSON.stringify(obj, null, 2); },
-    encode: (v) => { const obj = JSON.parse(v); if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error('需要 JSON 对象'); return Object.entries(obj).map(([k, val]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(val))}`).join('&'); },
+    label: '表单与 JSON', decodeLabel: '表单转 JSON', encodeLabel: 'JSON 转表单', group: 'format', direction: 'both',
+    decode: (v) => { const p = new URLSearchParams(v); const o = {}; for (const [k, val] of p) o[k] = val; return JSON.stringify(o, null, 2); },
+    encode: (v) => { const o = JSON.parse(v); return Object.entries(o).map(([k, val]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(val))}`).join('&'); }
   },
-  'jsonp-strip': {
-    label: 'JSONP 包裹剥离与添加',
-    decodeLabel: '去除 JSONP 外壳',
-    encodeLabel: '添加 JSONP 外壳',
-    group: 'json',
-    direction: 'both',
-    types: { decode: { out: 'String(json)' }, encode: { out: 'String(jsonp)' } },
-    configFields: [{ name: 'callback', label: '回调函数名', required: false, defaultValue: 'callback' }],
-    canDecode: (v) => /^\s*[\w$.]+\s*\([\s\S]*\)\s*;?\s*$/.test(String(v)),
-    canEncode: (v) => { try { JSON.parse(v); return true } catch { return false } },
-    decode: (v) => { const m = String(v).match(/^\s*[\w$.]+\s*\(([\s\S]*)\)\s*;?\s*$/); if (!m) throw new Error('不是 JSONP 格式'); return m[1].trim(); },
-    encode: (v, cfg) => { const name = (cfg?.callback || 'callback').trim() || 'callback'; JSON.parse(v); return `${name}(${v})`; },
+  'cookie-parse': { 
+    label: 'Cookie 解析为 JSON', group: 'format', direction: 'decode-only',
+    decode: (v) => { const obj = {}; v.split(';').forEach(p => { const [k, ...rest] = p.split('='); if (k && k.trim()) obj[k.trim()] = rest.join('=').trim(); }); return JSON.stringify(obj, null, 2); } 
   },
-
-  /* ---------- 压缩 ---------- */
-  'zlib': {
-    label: 'Zlib 压缩与解压',
-    decodeLabel: 'Zlib 解压',
-    encodeLabel: 'Zlib 压缩',
-    group: 'compress',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(zlib-base64)' } },
-    canDecode: (v) => { try { base64ToBytes(v); return true } catch { return false } },
-    canEncode: (v) => typeof v === 'string',
-    decode: async (v) => callCrypto('zlib-decompress', v),
-    encode: async (v) => callCrypto('zlib-compress', v),
+  'cookie-stringify': { 
+    label: 'JSON 转为 Cookie 字符串', group: 'format', direction: 'encode-only',
+    encode: (v) => { const obj = JSON.parse(v); return Object.entries(obj).map(([k, val]) => `${k}=${val}`).join('; '); } 
   },
-  'deflate': {
-    label: 'Deflate 压缩与解压',
-    decodeLabel: 'Deflate 解压',
-    encodeLabel: 'Deflate 压缩',
-    group: 'compress',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(deflate-base64)' } },
-    canDecode: (v) => { try { base64ToBytes(v); return true } catch { return false } },
-    canEncode: (v) => typeof v === 'string',
-    decode: async (v) => callCrypto('deflate-decompress', v),
-    encode: async (v) => callCrypto('deflate-compress', v),
+  'jwt-decode': { 
+    label: 'JWT 解析（提取 Payload）', group: 'format', direction: 'decode-only',
+    decode: (v) => { const p = v.split('.')[1]; if (!p) throw new Error('非法 JWT'); return dec.decode(b64ToBytes(p.replace(/-/g, '+').replace(/_/g, '/'))); } 
   },
-
-  /* ---------- 哈希 ---------- */
-  'md5': {
-    label: 'MD5（支持拼接密钥）',
-    group: 'hash',
-    direction: 'decode-only',
-    types: { decode: { out: 'String(hex-md5)' } },
-    configFields: [
-      { name: 'key', label: '拼接密钥（可空）', required: false, placeholder: '留空则不拼接' },
-      { name: 'position', label: '拼接位置（after / before）', required: false, defaultValue: 'after' },
-    ],
-    canDecode: (v) => typeof v === 'string',
-    decode: async (v, cfg) => {
-      const key = String(cfg?.key ?? '')
-      const pos = String(cfg?.position || 'after').toLowerCase()
-      const input = pos === 'before' ? key + v : v + key
-      return await callCrypto('md5', input)
-    },
-  },
-  'sha1': {
-    label: 'SHA-1（支持拼接密钥）',
-    group: 'hash',
-    direction: 'decode-only',
-    types: { decode: { out: 'String(hex-sha1)' } },
-    configFields: [
-      { name: 'key', label: '拼接密钥（可空）', required: false, placeholder: '留空则不拼接' },
-      { name: 'position', label: '拼接位置（after / before）', required: false, defaultValue: 'after' },
-    ],
-    canDecode: (v) => typeof v === 'string',
-    decode: async (v, cfg) => {
-      const key = String(cfg?.key ?? '')
-      const pos = String(cfg?.position || 'after').toLowerCase()
-      const input = pos === 'before' ? key + v : v + key
-      return await callCrypto('sha1', input)
-    },
-  },
-  'sha256': {
-    label: 'SHA-256（支持拼接密钥）',
-    group: 'hash',
-    direction: 'decode-only',
-    types: { decode: { out: 'String(hex-sha256)' } },
-    configFields: [
-      { name: 'key', label: '拼接密钥（可空）', required: false, placeholder: '留空则不拼接' },
-      { name: 'position', label: '拼接位置（after / before）', required: false, defaultValue: 'after' },
-    ],
-    canDecode: (v) => typeof v === 'string',
-    decode: async (v, cfg) => {
-      const key = String(cfg?.key ?? '')
-      const pos = String(cfg?.position || 'after').toLowerCase()
-      const input = pos === 'before' ? key + v : v + key
-      return await callCrypto('sha256', input)
-    },
+  'jwt-hs256': { 
+    label: 'JWT HS256 签名', group: 'format', direction: 'encode-only',
+    configFields: [{ name: 'secret', label: '密钥 (Secret)', required: true }],
+    encode: async (v, cfg) => await callCrypto('jwt-hs256-sign', v, { secret: cfg.secret }) 
   },
 
   /* ---------- 对称加密 ---------- */
   'aes-cbc': {
-    label: 'AES-CBC 加解密',
-    decodeLabel: 'AES-CBC 解密',
-    encodeLabel: 'AES-CBC 加密',
-    group: 'symmetric',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(base64)' } },
-    configFields: [{ name: 'key', label: '密钥（hex）', required: true }, { name: 'iv', label: 'IV（hex）', required: true }],
-    canDecode: (v, cfg) => { try { if (!cfg?.key || !cfg?.iv) return false; base64ToBytes(v); return true } catch { return false } },
-    canEncode: (v, cfg) => !!(cfg?.key && cfg?.iv),
-    decode: async (v, cfg) => callCrypto('aes-cbc-decrypt', v, { key: cfg.key, iv: cfg.iv }),
-    encode: async (v, cfg) => callCrypto('aes-cbc-encrypt', v, { key: cfg.key, iv: cfg.iv }),
+    label: 'AES-CBC 加解密', decodeLabel: 'AES-CBC 解密', encodeLabel: 'AES-CBC 加密', group: 'crypto', direction: 'both',
+    configFields: [{ name: 'key', label: '密钥 (Hex)', required: true }, { name: 'iv', label: 'IV (Hex)', required: true }],
+    decode: async (v, cfg) => await callCrypto('aes-cbc-decrypt', v, cfg),
+    encode: async (v, cfg) => await callCrypto('aes-cbc-encrypt', v, cfg),
   },
   'aes-gcm': {
-    label: 'AES-GCM 加解密',
-    decodeLabel: 'AES-GCM 解密',
-    encodeLabel: 'AES-GCM 加密',
-    group: 'symmetric',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(base64)' } },
-    configFields: [{ name: 'key', label: '密钥（hex）', required: true }, { name: 'iv', label: 'IV（hex）', required: true }, { name: 'tagLength', label: 'Tag 长度（默认 16）', required: false, defaultValue: '16' }],
-    canDecode: (v, cfg) => { try { if (!cfg?.key || !cfg?.iv) return false; base64ToBytes(v); return true } catch { return false } },
-    canEncode: (v, cfg) => !!(cfg?.key && cfg?.iv),
-    decode: async (v, cfg) => callCrypto('aes-gcm-decrypt', v, { key: cfg.key, iv: cfg.iv, tagLength: Number(cfg.tagLength || 16) }),
-    encode: async (v, cfg) => callCrypto('aes-gcm-encrypt', v, { key: cfg.key, iv: cfg.iv, tagLength: Number(cfg.tagLength || 16) }),
+    label: 'AES-GCM 加解密', decodeLabel: 'AES-GCM 解密', encodeLabel: 'AES-GCM 加密', group: 'crypto', direction: 'both',
+    configFields: [{ name: 'key', label: '密钥 (Hex)', required: true }, { name: 'iv', label: 'IV (Hex)', required: true }],
+    decode: async (v, cfg) => await callCrypto('aes-gcm-decrypt', v, cfg),
+    encode: async (v, cfg) => await callCrypto('aes-gcm-encrypt', v, cfg),
   },
   'aes-ctr': {
-    label: 'AES-CTR 加解密',
-    decodeLabel: 'AES-CTR 解密',
-    encodeLabel: 'AES-CTR 加密',
-    group: 'symmetric',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(base64)' } },
-    configFields: [{ name: 'key', label: '密钥（hex）', required: true }, { name: 'iv', label: 'Counter（hex）', required: true }],
-    canDecode: (v, cfg) => { try { if (!cfg?.key || !cfg?.iv) return false; base64ToBytes(v); return true } catch { return false } },
-    canEncode: (v, cfg) => !!(cfg?.key && cfg?.iv),
-    decode: async (v, cfg) => callCrypto('aes-ctr-decrypt', v, { key: cfg.key, iv: cfg.iv }),
-    encode: async (v, cfg) => callCrypto('aes-ctr-encrypt', v, { key: cfg.key, iv: cfg.iv }),
+    label: 'AES-CTR 加解密', decodeLabel: 'AES-CTR 解密', encodeLabel: 'AES-CTR 加密', group: 'crypto', direction: 'both',
+    configFields: [{ name: 'key', label: '密钥 (Hex)', required: true }, { name: 'iv', label: 'Counter (Hex)', required: true }],
+    decode: async (v, cfg) => await callCrypto('aes-ctr-decrypt', v, cfg),
+    encode: async (v, cfg) => await callCrypto('aes-ctr-encrypt', v, cfg),
   },
   'des-cbc': {
-    label: 'DES-CBC 加解密',
-    decodeLabel: 'DES-CBC 解密',
-    encodeLabel: 'DES-CBC 加密',
-    group: 'symmetric',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(base64)' } },
-    configFields: [{ name: 'key', label: '密钥（hex，16 位）', required: true }, { name: 'iv', label: 'IV（hex，16 位）', required: true }],
-    canDecode: (v, cfg) => { try { if (!cfg?.key || !cfg?.iv) return false; base64ToBytes(v); return true } catch { return false } },
-    canEncode: (v, cfg) => !!(cfg?.key && cfg?.iv),
-    decode: async (v, cfg) => callCrypto('des-cbc-decrypt', v, { key: cfg.key, iv: cfg.iv }),
-    encode: async (v, cfg) => callCrypto('des-cbc-encrypt', v, { key: cfg.key, iv: cfg.iv }),
+    label: 'DES-CBC 加解密', decodeLabel: 'DES-CBC 解密', encodeLabel: 'DES-CBC 加密', group: 'crypto', direction: 'both',
+    configFields: [{ name: 'key', label: '密钥 (Hex)', required: true }, { name: 'iv', label: 'IV (Hex)', required: true }],
+    decode: async (v, cfg) => await callCrypto('des-cbc-decrypt', v, cfg),
+    encode: async (v, cfg) => await callCrypto('des-cbc-encrypt', v, cfg),
   },
 
   /* ---------- 非对称加密 ---------- */
   'rsa-oaep': {
-    label: 'RSA-OAEP 加解密',
-    decodeLabel: 'RSA-OAEP 解密',
-    encodeLabel: 'RSA-OAEP 加密',
-    group: 'asymmetric',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(base64)' } },
-    configFields: [{ name: 'privateKey', label: '私钥 PEM（解）', required: false, multiline: true }, { name: 'publicKey', label: '公钥 PEM（加）', required: false, multiline: true }],
-    canDecode: (v, cfg) => !!(cfg?.privateKey) && (() => { try { base64ToBytes(v); return true } catch { return false } })(),
-    canEncode: (v, cfg) => !!(cfg?.publicKey),
-    decode: async (v, cfg) => callCrypto('rsa-oaep-decrypt', v, { privateKey: cfg.privateKey }),
-    encode: async (v, cfg) => callCrypto('rsa-oaep-encrypt', v, { publicKey: cfg.publicKey }),
+    label: 'RSA-OAEP 加解密', decodeLabel: 'RSA-OAEP 解密', encodeLabel: 'RSA-OAEP 加密', group: 'crypto', direction: 'both',
+    configFields: [{ name: 'privateKey', label: '私钥 PEM', multiline: true }, { name: 'publicKey', label: '公钥 PEM', multiline: true }],
+    decode: async (v, cfg) => await callCrypto('rsa-oaep-decrypt', v, cfg),
+    encode: async (v, cfg) => await callCrypto('rsa-oaep-encrypt', v, cfg),
   },
   'rsa-pkcs1': {
-    label: 'RSA-PKCS1 加解密',
-    decodeLabel: 'RSA-PKCS1 解密',
-    encodeLabel: 'RSA-PKCS1 加密',
-    group: 'asymmetric',
-    direction: 'both',
-    types: { decode: { out: 'String(utf-8)' }, encode: { out: 'String(base64)' } },
-    configFields: [{ name: 'privateKey', label: '私钥 PEM（解）', required: false, multiline: true }, { name: 'publicKey', label: '公钥 PEM（加）', required: false, multiline: true }],
-    canDecode: (v, cfg) => !!(cfg?.privateKey) && (() => { try { base64ToBytes(v); return true } catch { return false } })(),
-    canEncode: (v, cfg) => !!(cfg?.publicKey),
-    decode: async (v, cfg) => callCrypto('rsa-pkcs1-decrypt', v, { privateKey: cfg.privateKey }),
-    encode: async (v, cfg) => callCrypto('rsa-pkcs1-encrypt', v, { publicKey: cfg.publicKey }),
+    label: 'RSA-PKCS1 加解密', decodeLabel: 'RSA-PKCS1 解密', encodeLabel: 'RSA-PKCS1 加密', group: 'crypto', direction: 'both',
+    configFields: [{ name: 'privateKey', label: '私钥 PEM', multiline: true }, { name: 'publicKey', label: '公钥 PEM', multiline: true }],
+    decode: async (v, cfg) => await callCrypto('rsa-pkcs1-decrypt', v, cfg),
+    encode: async (v, cfg) => await callCrypto('rsa-pkcs1-encrypt', v, cfg),
   },
 
-  /* ---------- 时间 ---------- */
-  'timestamp-now-s': {
-    label: '生成当前 10 位时间戳（忽略输入）',
-    group: 'time',
-    direction: 'decode-only',
-    types: { decode: { out: 'String(时间戳-10)' } },
-    canDecode: () => true,
-    decode: () => String(Math.floor(Date.now() / 1000)),
+  /* ---------- 哈希 ---------- */
+  'md5': { label: 'MD5 哈希', group: 'hash', direction: 'decode-only', decode: async (v) => await callCrypto('md5', v) },
+  'sha1': { label: 'SHA-1 哈希', group: 'hash', direction: 'decode-only', decode: async (v) => await callCrypto('sha1', v) },
+  'sha256': { label: 'SHA-256 哈希', group: 'hash', direction: 'decode-only', decode: async (v) => await callCrypto('sha256', v) },
+
+  /* ---------- 时间戳 ---------- */
+  'timestamp-now-s': { 
+    label: '生成当前 10 位时间戳(s)', group: 'time', direction: 'decode-only',
+    decode: () => String(Math.floor(Date.now() / 1000)) 
   },
-  'timestamp-now-ms': {
-    label: '生成当前 13 位时间戳（忽略输入）',
-    group: 'time',
-    direction: 'decode-only',
-    types: { decode: { out: 'String(时间戳-13)' } },
-    canDecode: () => true,
-    decode: () => String(Date.now()),
+  'timestamp-now-ms': { 
+    label: '生成当前 13 位时间戳(ms)', group: 'time', direction: 'decode-only',
+    decode: () => String(Date.now()) 
   },
   'timestamp-ms-s': {
-    label: '时间戳 13位(ms) 与 10位(s)',
-    decodeLabel: '13位(ms) 转 10位(s)',
-    encodeLabel: '10位(s) 转 13位(ms)',
-    group: 'time',
-    direction: 'both',
-    types: { decode: { out: 'String(时间戳-10)' }, encode: { out: 'String(时间戳-13)' } },
-    canDecode: (v) => /^\d{13}$/.test(String(v).trim()),
-    canEncode: (v) => /^\d{10}$/.test(String(v).trim()),
-    decode: (v) => String(Math.floor(Number(v) / 1000)),
-    encode: (v) => String(Number(v) * 1000),
+    label: '13位(ms) 转 10位(s)', group: 'time', direction: 'decode-only',
+    decode: (v) => String(Math.floor(Number(v) / 1000))
   },
   'timestamp-to-date': {
-    label: '时间戳(10/13) → 日期字符串',
-    group: 'time',
-    direction: 'decode-only',
-    types: { decode: { out: 'String(日期)' } },
-    canDecode: (v) => /^\d{10,13}$/.test(String(v).trim()),
+    label: '时间戳转日期字符串', group: 'time', direction: 'decode-only',
     decode: (v) => {
-      const n = Number(v)
-      const ms = String(v).length === 10 ? n * 1000 : n
-      const d = new Date(ms)
-      if (Number.isNaN(d.getTime())) throw new Error('非法时间戳')
-      return d.toISOString()
-    },
+      const n = Number(v); const ms = String(v).length === 10 ? n * 1000 : n;
+      return new Date(ms).toISOString();
+    }
   },
 
-  /* ---------- 数值 ---------- */
+  /* ---------- 数值计算 ---------- */
   'number': {
-    label: 'Number() 严格转数字',
-    group: 'number',
-    direction: 'decode-only',
-    types: { decode: { out: 'Number' } },
-    canDecode: (v) => /^-?\d+(\.\d+)?$/.test(String(v).trim()),
-    decode: (v) => {
-      const n = Number(v)
-      if (Number.isNaN(n)) throw new Error('无法转数字')
-      return String(n)
-    },
+    label: '严格转数字', group: 'number', direction: 'decode-only',
+    decode: (v) => { const n = Number(v); if (Number.isNaN(n)) throw new Error('无法转数字'); return String(n); }
   },
   'math': {
-    label: '数值运算（+ - * /）',
-    group: 'number',
-    direction: 'decode-only',
-    types: { decode: { out: 'Number' } },
+    label: '数值运算（+ - * /）', group: 'number', direction: 'decode-only',
     configFields: [
-      { name: 'op',      label: '运算符 + - * /', required: true, defaultValue: '+' },
-      { name: 'operand', label: '操作数', required: true, defaultValue: '0' },
+      { name: 'op', label: '运算符 + - * /', required: true, defaultValue: '+' },
+      { name: 'operand', label: '操作数', required: true, defaultValue: '1' },
     ],
-    canDecode: (v) => /^-?\d+(\.\d+)?$/.test(String(v).trim()),
     decode: (v, cfg) => {
-      const n = Number(v)
-      if (Number.isNaN(n)) throw new Error('输入不是数字')
-      const op = Number(cfg?.operand)
-      if (Number.isNaN(op)) throw new Error('操作数不是数字')
+      const n = Number(v); const op = Number(cfg?.operand);
       switch (String(cfg?.op)) {
-        case '+': return String(n + op)
-        case '-': return String(n - op)
-        case '*': return String(n * op)
-        case '/': if (op === 0) throw new Error('除零'); return String(n / op)
-        default: throw new Error(`未知运算符 ${cfg?.op}`)
+        case '+': return String(n + op);
+        case '-': return String(n - op);
+        case '*': return String(n * op);
+        case '/': return String(n / op);
+        default: throw new Error('未知运算符');
       }
     },
   },
   'math-floor': {
-    label: 'Math.floor 取整',
-    group: 'number',
-    direction: 'decode-only',
-    types: { decode: { out: 'Number(int)' } },
-    canDecode: (v) => /^-?\d+(\.\d+)?$/.test(String(v).trim()),
-    decode: (v) => String(Math.floor(Number(v))),
+    label: 'Math.floor 取整', group: 'number', direction: 'decode-only',
+    decode: (v) => String(Math.floor(Number(v)))
   },
 
-  /* ---------- 文本 ---------- */
-  'text-jsonp-strip': {
-    label: '文本去除 JSONP 外壳（仅剥离）',
-    group: 'text',
-    direction: 'decode-only',
-    types: { decode: { out: 'String(json)' } },
-    canDecode: (v) => /^\s*[\w$.]+\s*\([\s\S]*\)\s*;?\s*$/.test(String(v)),
-    decode: (v) => {
-      const m = String(v).match(/^\s*[\w$.]+\s*\(([\s\S]*)\)\s*;?\s*$/)
-      if (!m) throw new Error('不是 JSONP')
-      return m[1].trim()
-    },
-  },
-
-  /* ---------- 请求链引用 ---------- */
-  'chain': {
-    label: '请求链取值（引用前面请求的响应）',
-    group: 'chain',
-    direction: 'decode-only',
-    configFields: [
-      { name: 'expr', label: '表达式（如 req.0.body / req.0.json.data.token）', required: true, placeholder: 'req.0.json.data.token' },
-    ],
-    canDecode: () => true,
-    decode: async (v, cfg, ctx) => {
-      const { resolveChainExpr } = await import('./requestChain')
-      const value = resolveChainExpr(cfg?.expr, ctx)
-      return typeof value === 'object' ? JSON.stringify(value) : String(value ?? '')
-    },
-  },
-
-  /* ---------- JS 表达式 ---------- */
-  'js-expression': {
-    label: 'JS 表达式（可引用 responses）',
-    group: 'chain',
-    direction: 'decode-only',
-    configFields: [{
-      name: 'code',
-      label: '代码（可访问 input, responses, currentStep）',
-      required: true,
-      multiline: true,
-      defaultValue: 'return input;',
-    }],
-    canDecode: () => true,
-    decode: async (v, cfg, ctx) => {
-      const fn = new Function('input', 'responses', 'currentStep', `"use strict";\n${cfg.code}`)
-      const r = await fn(v, ctx?.responses || [], ctx?.currentStep ?? -1)
-      if (r === undefined) throw new Error('JS 表达式没有返回值')
-      return r == null ? '' : (typeof r === 'object' ? JSON.stringify(r) : String(r))
-    },
-  },
-
-  /* ---------- 应用专用：jiem 解码 / jiam 编码（两个独立算法） ---------- */
-  'jiem': {
-    label: 'jiem 解码（解 jiam 篡改头 gzip）',
-    group: 'app',
-    direction: 'decode-only',
-    types: { decode: { out: 'JSON' } },
-    configFields: [
-      { name: 'format', label: '输入格式（base64 / hex / latin1）', required: false, defaultValue: 'base64' },
-    ],
-    canDecode: (v) => String(v || '').trim().length >= 12,
-    decode: async (v, cfg) => {
-      const fmt = String(cfg?.format || 'base64').toLowerCase();
-      const raw = String(v ?? '').trim();
-      let b64;
-      if (fmt === 'hex') {
-        b64 = bytesToBase64(hexToBytes(raw));
-      } else if (fmt === 'latin1') {
-        const bytes = new Uint8Array(raw.length);
-        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i) & 0xff;
-        b64 = bytesToBase64(bytes);
-      } else {
-        base64ToBytes(raw);
-        b64 = raw;
-      }
-      const text = await callCrypto('jiem-decompress', b64);
-      try {
-        const obj = JSON.parse(text);
-        return JSON.stringify(obj, null, 2);
-      } catch {
-        return text;
-      }
-    },
-  },
-  'jiam': {
-    label: 'jiam 编码（篡改头 gzip 压缩）',
-    group: 'app',
-    direction: 'encode-only',
-    types: { encode: { out: 'String(base64)' } },
-    configFields: [
-      { name: 'format', label: '输出格式（base64 / hex）', required: false, defaultValue: 'base64' },
-    ],
-    canEncode: () => true,
-    encode: async (v, cfg) => {
-      const fmt = String(cfg?.format || 'base64').toLowerCase();
-      const b64 = await callCrypto('jiem-compress', v);
-      if (fmt === 'hex') {
-        return bytesToHex(base64ToBytes(b64));
-      }
-      return b64;
-    },
-  },
-
-  /* ---------- 应用专用：qm 签名 ---------- */
+  /* ---------- 应用与联动 ---------- */
+  'jiem': { label: 'jiem 解码', group: 'app', direction: 'decode-only', decode: async (v) => await callCrypto('jiem-decompress', v) },
+  'jiam': { label: 'jiam 编码', group: 'app', direction: 'encode-only', encode: async (v) => await callCrypto('jiem-compress', v) },
+  
   'qm': {
     label: 'qm 签名：md5( md5(jiam字节) + secret )',
     group: 'app',
     direction: 'decode-only',
-    types: { decode: { out: 'String(hex-md5)' } },
     configFields: [
       { name: 'secret', label: 'Secret（如 hex_md5(appBundleId)）', required: true, placeholder: 'hex_md5("com.xxx.app")' },
       { name: 'format', label: '输入格式（base64 / hex）', required: false, defaultValue: 'base64' },
     ],
-    canDecode: () => true,
     decode: async (v, cfg) => {
       if (!cfg?.secret) throw new Error('qm: 缺少 secret')
       const fmt = String(cfg?.format || 'base64').toLowerCase()
       const raw = String(v ?? '').trim()
       let b64 = raw
       if (fmt === 'hex') {
-        b64 = bytesToBase64(hexToBytes(raw))
-      } else {
-        base64ToBytes(b64)
+        b64 = bytesToB64(hexToBytes(raw))
       }
       return await callCrypto('qm', b64, { secret: cfg.secret })
     },
   },
-}
 
-/* ==================== 辅助 ==================== */
-export function getTransform(key) {
-  return TRANSFORMS[key]
-}
+  'js-expression': {
+    label: 'JS 表达式（联动计算）', group: 'app', direction: 'decode-only',
+    configFields: [{
+      name: 'code', label: '代码 (可用 vars, responses, md5)', required: true, multiline: true,
+      defaultValue: `// 【1. 如何读取前面请求的响应体？】
+// 索引 0 表示请求组中的第 1 个请求
+// const resData = JSON.parse(responses[0].body);
+// const token = resData.data.token;
 
-export function suggestDirection(key, value, cfg) {
-  const t = TRANSFORMS[key]
-  if (!t) return null
-  const canDecode = t.decode && (!t.canDecode || t.canDecode(value, cfg))
-  const canEncode = t.encode && (!t.canEncode || t.canEncode(value, cfg))
-  if (t.direction === 'decode-only') return canDecode ? 'decode' : null
-  if (t.direction === 'encode-only') return canEncode ? 'encode' : null
-  if (canDecode && !canEncode) return 'decode'
-  if (!canDecode && canEncode) return 'encode'
-  if (canDecode && canEncode) return 'decode'
-  return null
+// 【2. 如何读取当前报文里 <@var:xxx> 提取的变量？】
+// const uid = vars.uid;
+
+// 【3. 如何读取原始 input 值？】
+// const raw = input;
+
+// 【4. 如何计算 MD5？】(支持 await 异步)
+// return await md5(uid + token + 'my_secret_salt');
+
+return input; // 默认原样返回`,
+    }],
+    decode: async (v, cfg, ctx) => {
+      try {
+        // 将上下文打包发给主进程执行
+        const r = await window.electronAPI.script.run({
+          code: cfg.code,
+          input: v,
+          context: {
+            vars: ctx?.vars || {},
+            responses: ctx?.responses || []
+          }
+        });
+        return r.ok ? r.value : `[JS失败: ${r.error}]`;
+      } catch (e) { 
+        return `[JS失败: ${e.message}]`; 
+      }
+    },
+  },
 }
 
 export async function applyTransform({ key, direction, value, config, ctx }) {
