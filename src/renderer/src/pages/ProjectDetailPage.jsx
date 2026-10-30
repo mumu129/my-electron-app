@@ -1,18 +1,20 @@
-import React, { useEffect, useMemo, useState } from 'react';
+// src/renderer/src/pages/ProjectDetailPage.jsx
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import {
   Button, Card, Col, Row, Flex, Tag, Typography, Empty, Popconfirm,
-  App as AntApp, Tabs, Modal, Input, Tooltip, List, Checkbox,
+  App as AntApp, Tabs, Modal, Input, Tooltip, List, Checkbox, InputNumber, Space,
 } from 'antd';
 import {
   ArrowLeftOutlined, DeleteOutlined, FolderOpenOutlined,
   EditOutlined, ArrowUpOutlined, ArrowDownOutlined,
-  ReloadOutlined, HolderOutlined,
+  ReloadOutlined, HolderOutlined, PlayCircleOutlined, StopOutlined,
 } from '@ant-design/icons';
 import { useProjects } from '../store/projectStore';
 import RequestWorkbench from '../components/RequestWorkbench';
 import AlgorithmConfigPanel from '../components/AlgorithmConfigPanel';
 import WorkareaToolbar from '../components/WorkareaToolbar';
 import usePersistentState from '../hooks/usePersistentState';
+import { processTags, updateDecTags } from '../utils/hackTags';
 
 const { Text } = Typography;
 
@@ -33,9 +35,13 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const [draggingIndex, setDraggingIndex] = useState(null);
   const [dropIndex, setDropIndex] = useState(null);
   
-  // 导出 userInfo 的 Modal 状态
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [selectedExportReqs, setSelectedExportReqs] = useState([]);
+
+  const [runModalOpen, setRunModalOpen] = useState(false);
+  const [intervalSec, setIntervalSec] = useState(0);
+  const [isRunning, setIsRunning] = useState(false);
+  const stopFlagRef = useRef(false);
 
   const project = useMemo(() => projects.find((p) => p.id === projectId), [projects, projectId]);
 
@@ -102,7 +108,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
       updateGroupRequests(projectId, activeGroup.id, next);
     };
 
-    // 导出 userInfo 逻辑
     const handleSaveUserInfo = async () => {
       if (selectedExportReqs.length === 0) return message.warning('请选择要导出的请求');
       const folderName = `${project.name}_${activeGroup.name}`.replace(/[<>:"/\\|?*]/g, '_');
@@ -129,6 +134,95 @@ export default function ProjectDetailPage({ projectId, onBack }) {
       }
     };
 
+    // 核心：执行逻辑
+    const executeGroup = async () => {
+      stopFlagRef.current = false;
+      setIsRunning(true);
+      message.success(`开始执行请求组：「${activeGroup.name}」`);
+
+      // 拷贝一份最新的数据，防止闭包导致读到旧数据
+      let currentReqs = [...activeGroup.requests];
+
+      while (!stopFlagRef.current) {
+        for (let i = 0; i < currentReqs.length; i++) {
+          if (stopFlagRef.current) break;
+          const entry = currentReqs[i];
+          
+          try {
+            const req = entry.request || {};
+            const method = req.method || 'GET';
+            const url = req.url || '';
+            
+            // 解析 Headers
+            const headers = {};
+            (req.headers || []).forEach(h => {
+              if (h.name && !['host', 'content-length', 'connection'].includes(h.name.toLowerCase())) {
+                headers[h.name] = h.value || '';
+              }
+            });
+
+            // 解析 Body 并应用加解密标签
+            let bodyText = req.postData?.text;
+            if (bodyText) {
+              // 1. 更新解密后的状态 (如 +1 运算后回写)
+              const newTemplate = await updateDecTags(bodyText);
+              if (newTemplate !== bodyText) {
+                updateRequestFields(projectId, activeGroup.id, entry._uid, [{ fieldPath: 'request.postData.text', value: newTemplate }]);
+                // 同步更新本地内存中的数据，供下一轮使用
+                currentReqs[i] = {
+                  ...entry,
+                  request: {
+                    ...req,
+                    postData: { ...req.postData, text: newTemplate }
+                  }
+                };
+              }
+              // 2. 生成最终发送的密文
+              bodyText = await processTags(newTemplate);
+            }
+
+            // 发送请求
+            const res = await window.electronAPI.httpRequest({
+              url,
+              method,
+              headers,
+              body: bodyText,
+              proxy: projectProxy || undefined
+            });
+
+            // 更新响应状态
+            const newResponse = {
+              status: res.status,
+              statusText: res.statusText,
+              headers: res.headers || [],
+              content: { text: res.body, size: res.body?.length || 0, mimeType: 'application/json' },
+              time: res.time
+            };
+
+            applyResponse(projectId, activeGroup.id, entry._uid, newResponse);
+          } catch (e) {
+            console.error(`[Execute Group] 第 ${i + 1} 个请求失败:`, e);
+            message.error(`第 ${i + 1} 个请求失败: ${e.message}`);
+          }
+        }
+
+        if (stopFlagRef.current || !intervalSec || intervalSec <= 0) {
+          break;
+        }
+        
+        await new Promise(r => setTimeout(r, intervalSec * 1000));
+      }
+
+      setIsRunning(false);
+      message.info('请求组执行已停止');
+    };
+
+    const handleStop = () => {
+      stopFlagRef.current = true;
+      setIsRunning(false);
+      message.warning('正在停止执行...');
+    };
+
     const workbenchTopExtra = (
       <Flex align="center" gap={8} wrap>
         <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => setActiveGroupId(null)}>返回</Button>
@@ -147,8 +241,19 @@ export default function ProjectDetailPage({ projectId, onBack }) {
         />
 
         <div style={{ flex: 1 }} />
+
+        {isRunning ? (
+          <Button size="small" danger type="primary" icon={<StopOutlined />} onClick={handleStop}>
+            停止执行
+          </Button>
+        ) : (
+          <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => setRunModalOpen(true)}>
+            按顺序执行
+          </Button>
+        )}
+
         <Tooltip title="恢复所有请求到初始状态">
-          <Button size="small" icon={<ReloadOutlined />}
+          <Button size="small" icon={<ReloadOutlined />} disabled={isRunning}
             onClick={() => { resetGroupRequests(projectId, activeGroup.id); message.success('已重置'); }}>
             重置
           </Button>
@@ -190,6 +295,23 @@ export default function ProjectDetailPage({ projectId, onBack }) {
               </List.Item>
             )}
           />
+        </Modal>
+
+        <Modal 
+          title="按顺序执行请求组" 
+          open={runModalOpen} 
+          onOk={() => { setRunModalOpen(false); executeGroup(); }} 
+          onCancel={() => setRunModalOpen(false)}
+          okText="开始执行"
+        >
+          <Space direction="vertical" style={{ marginTop: 12 }}>
+            <div>将按顺序发送当前请求组中的 <b>{activeGroup.requests.length}</b> 个请求。</div>
+            <div style={{ color: '#888', fontSize: 12 }}>发送前会自动处理请求报文中的加解密标签，并将最新的明文状态回写到左侧模板。</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <span>定时循环（秒，0 表示仅执行一次）：</span>
+              <InputNumber min={0} value={intervalSec} onChange={setIntervalSec} />
+            </div>
+          </Space>
         </Modal>
       </Flex>
     );
