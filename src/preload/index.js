@@ -3,16 +3,22 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
   httpRequest: (payload) => ipcRenderer.invoke('http:request', payload),
-  script: {
-    run: (payload) => ipcRenderer.invoke('script:run', payload),
-    runEntry: (payload) => ipcRenderer.invoke('script:run-entry', payload),
-  },
   lib: {
     list: () => ipcRenderer.invoke('lib:list'),
     import: () => ipcRenderer.invoke('lib:import'),
     delete: (payload) => ipcRenderer.invoke('lib:delete', payload),
     openDir: () => ipcRenderer.invoke('lib:open-dir'),
-    run: (payload) => ipcRenderer.invoke('lib:run', payload),
+  },
+  crypto: {
+    transform: (payload) => ipcRenderer.invoke('crypto:transform', payload),
+  },
+  workarea: {
+    setPath: () => ipcRenderer.invoke('workarea:set-path'),
+    getPath: () => ipcRenderer.invoke('workarea:get-path'),
+    mkdir: (payload) => ipcRenderer.invoke('workarea:mkdir', payload),
+    writeJson: (payload) => ipcRenderer.invoke('workarea:write-json', payload),
+    run: (payload) => ipcRenderer.invoke('workarea:run', payload),
+    stopRun: () => ipcRenderer.invoke('workarea:stop-run'),
   },
 }
 

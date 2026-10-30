@@ -5,7 +5,7 @@ import {
 import { UploadOutlined, FileTextOutlined } from '@ant-design/icons';
 import RequestWorkbench from './RequestWorkbench';
 import AddToProjectModal from './AddToProjectModal';
-import { parseHar, genUid } from '../utils/har';
+import { parseHar, genUid, setPath } from '../utils/har';
 import { useProjects } from '../store/projectStore';
 
 const { Text } = Typography;
@@ -29,7 +29,6 @@ export default function HarViewer({ entries, setEntries, fileName, setFileName, 
       setEntries(processed);
       setFileName(file.name);
       message.success(`已导入 ${processed.length} 条请求`);
-      // 立即 flush 到 IDB
       setTimeout(() => flushHar?.(), 100);
     } catch (e) {
       console.error('[HarViewer] 导入失败:', e);
@@ -46,6 +45,23 @@ export default function HarViewer({ entries, setEntries, fileName, setFileName, 
     setAddModalOpen(true);
   };
 
+  const handleUpdateRequest = (uid, updates) => {
+    setEntries((prev) => prev.map((e) => {
+      if (e._uid !== uid) return e;
+      let next = { ...e };
+      for (const { fieldPath, value } of updates) {
+        next = setPath(next, fieldPath, value);
+      }
+      return next;
+    }));
+  };
+
+  const handleUpdateResponse = (uid, newResponse) => {
+    setEntries((prev) =>
+      prev.map((e) => (e._uid === uid ? { ...e, response: newResponse } : e))
+    );
+  };
+
   const headerExtra = (
     <Flex vertical gap={6}>
       <Flex justify="space-between" align="center">
@@ -53,11 +69,11 @@ export default function HarViewer({ entries, setEntries, fileName, setFileName, 
         <Flex gap={6} align="center">
           <Select
             size="small"
-            placeholder="选择项目（算法配置）"
+            placeholder="选择项目（仅用于算法上下文）"
             allowClear
             value={selectedProjectId}
             onChange={setSelectedProjectId}
-            style={{ width: 160 }}
+            style={{ width: 180 }}
             options={projects.map((p) => ({ value: p.id, label: p.name }))}
           />
           <Upload accept=".har,application/json" showUploadList={false}
@@ -97,6 +113,8 @@ export default function HarViewer({ entries, setEntries, fileName, setFileName, 
         onAddToProject={handleAddToProject}
         headerExtra={headerExtra}
         emptyNode={emptyNode}
+        onUpdateRequest={handleUpdateRequest}
+        onUpdateResponse={handleUpdateResponse}
       />
       <AddToProjectModal
         open={addModalOpen}

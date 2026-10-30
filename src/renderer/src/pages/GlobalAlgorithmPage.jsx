@@ -8,7 +8,8 @@ import {
   EditOutlined, FolderOpenOutlined, ImportOutlined, ReloadOutlined,
   FileTextOutlined,
 } from '@ant-design/icons';
-import { PARSER_TEMPLATES, PARSER_GROUPS } from '../utils/parsers';
+// 替换为新的严格算法库
+import { TRANSFORMS, TRANSFORM_GROUPS } from '../utils/strictTransforms';
 import { useAlgorithms } from '../store/algorithmStore';
 import { useScripts } from '../store/scriptStore';
 
@@ -124,7 +125,7 @@ function GlobalConfigForm({ algorithmKey }) {
   const { algorithms, updateGlobalAlgorithm, removeGlobalAlgorithm } = useAlgorithms();
   const { message } = AntApp.useApp();
   const [form] = Form.useForm();
-  const tpl = PARSER_TEMPLATES[algorithmKey];
+  const tpl = TRANSFORMS[algorithmKey];
   const existing = algorithms.global?.[algorithmKey]?.config || {};
 
   const handleSave = async () => {
@@ -141,7 +142,7 @@ function GlobalConfigForm({ algorithmKey }) {
   const content = (
     <div style={{ width: 400 }}>
       <Form form={form} layout="vertical" initialValues={existing} size="small">
-        {tpl.configFields.map((f) => (
+        {tpl.configFields?.map((f) => (
           <Form.Item key={f.name} name={f.name} label={f.label}>
             {f.multiline ? <Input.TextArea rows={3} /> : <Input />}
           </Form.Item>
@@ -160,7 +161,7 @@ function GlobalConfigForm({ algorithmKey }) {
   );
 }
 
-/* ============ 脚本编辑器（简化，只展示代码） ============ */
+/* ============ 脚本编辑器 ============ */
 function ScriptEditorModal({ open, editName, onClose }) {
   const { scripts, createScript, updateScript } = useScripts();
   const { message } = AntApp.useApp();
@@ -259,19 +260,20 @@ export default function GlobalAlgorithmPage() {
   const { algorithms } = useAlgorithms();
   const { scripts, removeScript } = useScripts();
   const { message } = AntApp.useApp();
-  const [activeGroup, setActiveGroup] = useState('symmetric');
+  const [activeGroup, setActiveGroup] = useState('encoding'); // 默认切到编码组
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingName, setEditingName] = useState(null);
 
   const byGroup = useMemo(() => {
     const result = {};
-    Object.entries(PARSER_TEMPLATES).forEach(([key, tpl]) => {
+    Object.entries(TRANSFORMS).forEach(([key, tpl]) => {
       (result[tpl.group] ||= []).push([key, tpl]);
     });
     return result;
   }, []);
 
-  const groups = Object.entries(PARSER_GROUPS).filter(([k]) => k !== 'external');
+  // 去除 chain 组的展示（因为 chain 依赖上下文）
+  const groups = Object.entries(TRANSFORM_GROUPS).filter(([k]) => k !== 'chain');
   const scriptList = Object.entries(scripts || {});
 
   return (

@@ -4,7 +4,8 @@ import {
   Popconfirm, App as AntApp, Divider, Empty,
 } from 'antd';
 import { SettingOutlined, CheckOutlined } from '@ant-design/icons';
-import { PARSER_TEMPLATES, PARSER_GROUPS } from '../utils/parsers';
+// 替换为新的严格算法库
+import { TRANSFORMS, TRANSFORM_GROUPS } from '../utils/strictTransforms';
 import { useAlgorithms } from '../store/algorithmStore';
 
 const { Text } = Typography;
@@ -107,12 +108,13 @@ function AlgorithmConfigCard({ projectId, algorithmKey, tpl }) {
 }
 
 export default function AlgorithmConfigPanel({ projectId, title }) {
-  const [activeGroup, setActiveGroup] = useState('symmetric');
+  // 使用 encoding 作为默认组
+  const [activeGroup, setActiveGroup] = useState('encoding');
 
   if (!projectId) return <Empty description="请先选择一个项目" />;
 
-  const groups = Object.entries(PARSER_GROUPS);
-  const inGroup = Object.entries(PARSER_TEMPLATES).filter(([, tpl]) => tpl.group === activeGroup);
+  const groups = Object.entries(TRANSFORM_GROUPS).filter(([k]) => k !== 'chain');
+  const inGroup = Object.entries(TRANSFORMS).filter(([, tpl]) => tpl.group === activeGroup);
 
   return (
     <div>
