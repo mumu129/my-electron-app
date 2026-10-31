@@ -77,9 +77,10 @@ export default function RequestWorkbench({
   const [dropIndex, setDropIndex] = useState(null);
 
   useEffect(() => {
-    if (!entries.some((e) => !e._uid)) return;
-    setEntries(entries.map((e) => (e._uid ? e : { ...e, _uid: genUid() })));
-  }, [entries, setEntries]);
+  if (!entries.some((e) => !e._uid)) return;
+  // 💡 [修复 #4] 函数式 updater，避免与 store 其它更新冲突
+  setEntries((prev) => prev.map((e) => (e._uid ? e : { ...e, _uid: genUid() })));
+}, [entries, setEntries]);
 
   const current = useMemo(() => entries.find((e) => e._uid === currentUid) || null, [entries, currentUid]);
   const chainContext = useMemo(() => {
@@ -138,6 +139,13 @@ export default function RequestWorkbench({
     });
   }, [entries, keyword, method, statusRange, filterHost, filterMime, excludeKeyword]);
 
+  // 💡 [修复 #10] O(n) 建一次索引，避免每行都 entries.indexOf(e) 的 O(n²)
+const entriesIndexMap = useMemo(() => {
+  const m = new Map();
+  entries.forEach((e, i) => m.set(e._uid, i));
+  return m;
+}, [entries]);
+
   const allChecked = filtered.length > 0 && filtered.every((e) => selectedUids.has(e._uid));
   const someChecked = filtered.some((e) => selectedUids.has(e._uid));
 
@@ -156,13 +164,16 @@ export default function RequestWorkbench({
   };
 
   const handleDeleteEntry = (entry) => {
-    const idx = entries.findIndex((e) => e._uid === entry._uid);
-    if (idx < 0) return;
+  // 💡 [修复 #4] 函数式删除，基于 store 内最新列表
+  const idx = entries.findIndex((e) => e._uid === entry._uid);
+  if (idx < 0) return;
+  setEntries((prev) => prev.filter((e) => e._uid !== entry._uid));
+  if (currentUid === entry._uid) {
     const next = entries.filter((e) => e._uid !== entry._uid);
-    setEntries(next);
-    if (currentUid === entry._uid) setCurrentUid(next[idx]?._uid || next[idx - 1]?._uid || null);
-    setSelectedUids((prev) => { const n = new Set(prev); n.delete(entry._uid); return n; });
-  };
+    setCurrentUid(next[idx]?._uid || next[idx - 1]?._uid || null);
+  }
+  setSelectedUids((prev) => { const n = new Set(prev); n.delete(entry._uid); return n; });
+};
 
   const handleAddClick = () => {
     const selected = entries.filter((e) => selectedUids.has(e._uid));
@@ -268,7 +279,7 @@ export default function RequestWorkbench({
               )}
             </Flex>
             <div style={{ flex: 1, overflow: 'auto' }}>
-              {entries.length === 0 ? (emptyNode || <Empty style={{ marginTop: 50 }} description="暂无请求" />) : filtered.map((e) => renderRow(e, entries.indexOf(e)))}
+              {entries.length === 0 ? (emptyNode || <Empty style={{ marginTop: 50 }} description="暂无请求" />) : filtered.map((e) => renderRow(e, entriesIndexMap.get(e._uid)))}
             </div>
           </Flex>
         </Splitter.Panel>

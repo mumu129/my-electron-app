@@ -1,9 +1,10 @@
 // src/renderer/src/pages/GlobalAlgorithmPage.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Card, Col, Row, Typography, Tag, Input, Button, Form, App as AntApp,
-  Popover, Divider, Flex, Empty, Modal, Space, Alert, Popconfirm, Dropdown
+  Switch,Card, Col, Row, Typography, Tag, Input, Button, Form, App as AntApp,
+  Popover, Divider, Flex, Empty, Modal, Space, Alert, Popconfirm, Dropdown, Checkbox,
 } from 'antd';
+
 import {
   SettingOutlined, CheckOutlined, DeleteOutlined, PlusOutlined,
   EditOutlined, FolderOpenOutlined, ImportOutlined, ReloadOutlined,
@@ -163,14 +164,26 @@ function GlobalConfigForm({ algorithmKey }) {
   };
   const handleClear = () => {
     removeGlobalAlgorithm(algorithmKey);
+    form.resetFields();
     message.success(`已清除 ${tpl.label}`);
   };
+
   const content = (
     <div style={{ width: 400 }}>
-      <Form form={form} layout="vertical" initialValues={existing} size="small">
+      <Form form={form} layout="vertical" size="small">
         {tpl.configFields?.map((f) => (
-          <Form.Item key={f.name} name={f.name} label={f.label}>
-            {f.multiline ? <Input.TextArea rows={3} /> : <Input />}
+          <Form.Item
+            key={f.name}
+            name={f.name}
+            label={f.label}
+            // 💡 布尔字段用 Switch：内部仍存 'true'/'false'，与标签参数格式一致
+            valuePropName={f.type === 'boolean' ? 'checked' : 'value'}
+            getValueProps={f.type === 'boolean' ? (v) => ({ checked: v === 'true' || v === true }) : undefined}
+            getValueFromEvent={f.type === 'boolean' ? (checked) => (checked ? 'true' : 'false') : undefined}
+          >
+            {f.type === 'boolean'
+              ? <Switch size="small" checkedChildren="开" unCheckedChildren="关" />
+              : f.multiline ? <Input.TextArea rows={3} /> : <Input />}
           </Form.Item>
         ))}
       </Form>
@@ -180,13 +193,24 @@ function GlobalConfigForm({ algorithmKey }) {
       </Flex>
     </div>
   );
+
   return (
-    <Popover content={content} trigger="click" title={`配置 ${tpl.label}`} placement="bottomRight">
+    <Popover
+      content={content}
+      trigger="click"
+      title={`配置 ${tpl.label}`}
+      placement="bottomRight"
+      onOpenChange={(open) => {
+        if (open) {
+          form.resetFields();
+          form.setFieldsValue(existing || {});
+        }
+      }}
+    >
       <Button size="small" icon={<SettingOutlined />}>配置</Button>
     </Popover>
   );
 }
-
 /* ============ 脚本编辑器 ============ */
 function ScriptEditorModal({ open, editName, onClose }) {
   const { scripts, createScript, updateScript } = useScripts();
@@ -296,16 +320,23 @@ function ScriptEditorModal({ open, editName, onClose }) {
         <Divider orientation="left" plain>配置字段（可选）</Divider>
         <Flex vertical gap={8} style={{ marginBottom: 12 }}>
           {configFields.map((f, i) => (
-            <Flex key={i} gap={6} align="center">
-              <Input size="small" style={{ width: 140 }} placeholder="字段名"
-                value={f.name} onChange={(e) => updateField(i, { name: e.target.value })} />
-              <Input size="small" style={{ width: 160 }} placeholder="显示名"
-                value={f.label} onChange={(e) => updateField(i, { label: e.target.value })} />
-              <Input size="small" style={{ flex: 1 }} placeholder="默认值"
-                value={f.defaultValue} onChange={(e) => updateField(i, { defaultValue: e.target.value })} />
-              <Button size="small" danger icon={<DeleteOutlined />} onClick={() => removeField(i)} />
-            </Flex>
-          ))}
+  <Flex key={i} gap={6} align="center">
+    <Input size="small" style={{ width: 140 }} placeholder="字段名"
+      value={f.name} onChange={(e) => updateField(i, { name: e.target.value })} />
+    <Input size="small" style={{ width: 160 }} placeholder="显示名"
+      value={f.label} onChange={(e) => updateField(i, { label: e.target.value })} />
+    <Input size="small" style={{ flex: 1 }} placeholder="默认值"
+      value={f.defaultValue} onChange={(e) => updateField(i, { defaultValue: e.target.value })} />
+    {/* 💡 [修复 #9] 必填开关 */}
+    <Checkbox
+      checked={f.required !== false}
+      onChange={(e) => updateField(i, { required: e.target.checked })}
+    >
+      必填
+    </Checkbox>
+    <Button size="small" danger icon={<DeleteOutlined />} onClick={() => removeField(i)} />
+  </Flex>
+))}
           <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={addField}>添加配置字段</Button>
         </Flex>
         <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>

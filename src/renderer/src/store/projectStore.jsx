@@ -1,152 +1,180 @@
 // src/renderer/src/store/projectStore.jsx
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { deepClone, setPath } from '../utils/har';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react'
+import { deepClone, setPath } from '../utils/har'
 
-const STORAGE_KEY = 'har-projects-v1';
-const ProjectContext = createContext(null);
+const STORAGE_KEY = 'har-projects-v1'
+const ProjectContext = createContext(null)
 
 const uid = () => {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-};
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function updateRequestList(list, entryUid, fn) {
+  return list.map((r) => (r._uid === entryUid ? fn(r) : r))
+}
 
 export function ProjectProvider({ children }) {
   const [projects, setProjects] = useState(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const list = raw ? JSON.parse(raw) : [];
-      return Array.isArray(list) ? list : [];
-    } catch { return []; }
-  });
+      const raw = localStorage.getItem(STORAGE_KEY)
+      const list = raw ? JSON.parse(raw) : []
+      return Array.isArray(list) ? list : []
+    } catch { return [] }
+  })
 
+  const projectsRef = useRef(projects)
+  projectsRef.current = projects
+
+  // 💡 [修复 #2] 统一的同步写入入口：setState 内部先算 next，再同步刷 ref，
+  // 让 getProjectSnapshot 在 setProjects 后的同一同步块内读到最新值。
+  const setProjectsSync = useCallback((updater) => {
+    setProjects((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      projectsRef.current = next
+      return next
+    })
+  }, [])
+
+  const getProjectSnapshot = useCallback((projectId) => {
+    const list = projectsRef.current || []
+    const p = list.find((x) => x.id === projectId)
+    return p ? deepClone(p) : null
+  }, [])
+
+  const saveTimer = useRef(null)
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(projects)); }
-    catch (e) { console.error('[ProjectStore] 持久化失败:', e); }
-  }, [projects]);
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(projects)) }
+      catch (e) { console.error('[ProjectStore] 持久化失败:', e) }
+    }, 400)
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current) }
+  }, [projects])
+
+  const importProject = (projectData) => {
+    const p = { ...projectData, id: uid(), createdAt: Date.now(), name: projectData.name ? `${projectData.name} (导入)` : '导入的项目' }
+    setProjectsSync((prev) => [...prev, p])
+    return p
+  }
 
   const createProject = (name) => {
-    const p = { id: uid(), name, createdAt: Date.now(), groups: [], proxy: '' };
-    setProjects((prev) => [...prev, p]);
-    return p;
-  };
+    const p = { id: uid(), name, createdAt: Date.now(), groups: [], proxy: '' }
+    setProjectsSync((prev) => [...prev, p])
+    return p
+  }
 
-  const deleteProject = (projectId) => setProjects((prev) => prev.filter((p) => p.id !== projectId));
-  const renameProject = (projectId, newName) => setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, name: newName } : p)));
+  const deleteProject = (projectId) => setProjectsSync((prev) => prev.filter((p) => p.id !== projectId))
+  const renameProject = (projectId, newName) => setProjectsSync((prev) => prev.map((p) => (p.id === projectId ? { ...p, name: newName } : p)))
 
   const createGroup = (projectId, name) => {
-    const g = { 
-      id: uid(), name, requests: [], 
-      configs: { main: {}, sub: {} }, // 💡 初始化分别存放的主组和副组密钥
-      proxy: '', 
-      subGroup: { 
-        requests: [], 
-        zones: [], 
-        successKeyword: '"code":200', 
-        maxRetries: 3,
-        judgeVar: 'level'
-      } 
-    };
-    setProjects((prev) => prev.map((p) => p.id === projectId ? { ...p, groups: [...p.groups, g] } : p));
-    return g;
-  };
+    const g = {
+      id: uid(), name, requests: [],
+      configs: { main: {}, sub: {} },
+      proxy: '',
+      subGroup: { requests: [], zones: [], successKeyword: '"code":200', maxRetries: 3, judgeVar: 'level' },
+    }
+    setProjectsSync((prev) => prev.map((p) => (p.id === projectId ? { ...p, groups: [...p.groups, g] } : p)))
+    return g
+  }
 
   const renameGroup = (projectId, groupId, newName) => {
-    const n = String(newName || '').trim();
-    if (!n) return;
-    setProjects((prev) => prev.map((p) => p.id === projectId ? { ...p, groups: p.groups.map((g) => g.id === groupId ? { ...g, name: n } : g) } : p));
-  };
+    const n = String(newName || '').trim()
+    if (!n) return
+    setProjectsSync((prev) => prev.map((p) => (p.id === projectId ? { ...p, groups: p.groups.map((g) => (g.id === groupId ? { ...g, name: n } : g)) } : p)))
+  }
 
-  const updateGroupProxy = (projectId, groupId, proxy) => {
-    setProjects((prev) => prev.map((p) => p.id !== projectId ? p : { ...p, groups: p.groups.map((g) => g.id === groupId ? { ...g, proxy } : g) }));
-  };
+  const updateGroupProxy = (projectId, groupId, proxy) =>
+    setProjectsSync((prev) => prev.map((p) => (p.id !== projectId ? p : { ...p, groups: p.groups.map((g) => (g.id === groupId ? { ...g, proxy } : g)) })))
 
-  // 💡 更新配置：带 level 区分（main/sub）
   const updateGroupConfig = (projectId, groupId, level, algoKey, config) => {
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
         groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
-          const currentConfigs = g.configs || {};
-          const levelConfigs = currentConfigs[level] || {};
-          return {
-            ...g,
-            configs: {
-              ...currentConfigs,
-              [level]: { ...levelConfigs, [algoKey]: config }
-            }
-          };
-        })
-      };
-    }));
-  };
+          if (g.id !== groupId) return g
+          const currentConfigs = g.configs || {}
+          const levelConfigs = currentConfigs[level] || {}
+          return { ...g, configs: { ...currentConfigs, [level]: { ...levelConfigs, [algoKey]: config } } }
+        }),
+      }
+    }))
+  }
 
-  // 删除配置
   const removeGroupConfig = (projectId, groupId, level, algoKey) => {
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
         groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
-          const currentConfigs = g.configs || {};
-          const levelConfigs = { ...(currentConfigs[level] || {}) };
-          delete levelConfigs[algoKey];
-          return {
-            ...g,
-            configs: { ...currentConfigs, [level]: levelConfigs }
-          };
-        })
-      };
-    }));
-  };
+          if (g.id !== groupId) return g
+          const currentConfigs = g.configs || {}
+          const levelConfigs = { ...(currentConfigs[level] || {}) }
+          delete levelConfigs[algoKey]
+          return { ...g, configs: { ...currentConfigs, [level]: levelConfigs } }
+        }),
+      }
+    }))
+  }
 
+  // 💡 [修复 #3 支撑] updateSubGroup 支持「对象 patch」与「函数式 patch」两种：
+  // - 对象：{ ...prev, ...patch }
+  // - 函数：函数返回 patch，内部合并。避免调用方把旧 subConfig 一起塞进来覆盖。
   const updateSubGroup = (projectId, groupId, subGroupData) => {
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
         groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
-          return { ...g, subGroup: { ...(g.subGroup || {}), ...subGroupData } };
-        })
-      };
-    }));
-  };
+          if (g.id !== groupId) return g
+          const cur = g.subGroup || {}
+          const patch = typeof subGroupData === 'function' ? subGroupData(cur) : subGroupData
+          return { ...g, subGroup: { ...cur, ...patch } }
+        }),
+      }
+    }))
+  }
 
-  const deleteGroup = (projectId, groupId) => setProjects((prev) => prev.map((p) => p.id === projectId ? { ...p, groups: p.groups.filter((g) => g.id !== groupId) } : p));
+  const deleteGroup = (projectId, groupId) =>
+    setProjectsSync((prev) => prev.map((p) => (p.id === projectId ? { ...p, groups: p.groups.filter((g) => g.id !== groupId) } : p)))
 
   const addRequestsToGroup = (projectId, groupId, requests) => {
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
         groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
+          if (g.id !== groupId) return g
           return {
             ...g,
             requests: [
               ...g.requests,
               ...requests.map((r) => {
-                const cloned = deepClone(r);
-                return { ...cloned, _addedAt: Date.now(), _initialRequest: deepClone(r.request), _initialResponse: deepClone(r.response) };
+                const cloned = deepClone(r)
+                return {
+                  ...cloned,
+                  _uid: uid(),
+                  _addedAt: Date.now(),
+                  _initialRequest: deepClone(r.request),
+                  _initialResponse: deepClone(r.response),
+                }
               }),
             ],
-          };
+          }
         }),
-      };
-    }));
-  };
+      }
+    }))
+  }
 
   const addRequestsToSubGroup = (projectId, groupId, requests) => {
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
         groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
-          const currentSubReqs = g.subGroup?.requests || [];
+          if (g.id !== groupId) return g
+          const currentSubReqs = g.subGroup?.requests || []
           return {
             ...g,
             subGroup: {
@@ -154,157 +182,191 @@ export function ProjectProvider({ children }) {
               requests: [
                 ...currentSubReqs,
                 ...requests.map((r) => {
-                  const cloned = deepClone(r);
-                  return { ...cloned, _addedAt: Date.now(), _initialRequest: deepClone(r.request), _initialResponse: deepClone(r.response) };
-                })
-              ]
-            }
-          };
-        })
-      };
-    }));
-  };
+                  const cloned = deepClone(r)
+                  return {
+                    ...cloned,
+                    _uid: uid(),
+                    _addedAt: Date.now(),
+                    _initialRequest: deepClone(r.request),
+                    _initialResponse: deepClone(r.response),
+                  }
+                }),
+              ],
+            },
+          }
+        }),
+      }
+    }))
+  }
 
-  const updateGroupRequests = (projectId, groupId, requests) => {
-    setProjects((prev) => prev.map((p) => p.id !== projectId ? p : { ...p, groups: p.groups.map((g) => g.id === groupId ? { ...g, requests } : g) }));
-  };
-
-  const updateSubGroupRequests = (projectId, groupId, subRequests) => {
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+  // 💡 [修复 #4 支撑] 支持 updater: 数组 | (prevArr) => 新数组
+  const updateGroupRequests = (projectId, groupId, updater) =>
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
-        groups: p.groups.map((g) => g.id === groupId ? { ...g, subGroup: { ...(g.subGroup || {}), requests: subRequests } } : g)
-      };
-    }));
-  };
+        groups: p.groups.map((g) => {
+          if (g.id !== groupId) return g
+          const next = typeof updater === 'function' ? updater(g.requests) : updater
+          return { ...g, requests: next }
+        }),
+      }
+    }))
+
+  const updateSubGroupRequests = (projectId, groupId, updater) =>
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
+      return {
+        ...p,
+        groups: p.groups.map((g) => {
+          if (g.id !== groupId) return g
+          const current = g.subGroup?.requests || []
+          const next = typeof updater === 'function' ? updater(current) : updater
+          return { ...g, subGroup: { ...(g.subGroup || {}), requests: next } }
+        }),
+      }
+    }))
 
   const reorderGroups = (projectId, fromIndex, toIndex) => {
-    if (fromIndex === toIndex) return;
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
-      const groups = [...p.groups];
-      if (fromIndex < 0 || fromIndex >= groups.length || toIndex < 0 || toIndex >= groups.length) return p;
-      const [moved] = groups.splice(fromIndex, 1);
-      groups.splice(toIndex, 0, moved);
-      return { ...p, groups };
-    }));
-  };
+    if (fromIndex === toIndex) return
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
+      const groups = [...p.groups]
+      if (fromIndex < 0 || fromIndex >= groups.length || toIndex < 0 || toIndex >= groups.length) return p
+      const [moved] = groups.splice(fromIndex, 1)
+      groups.splice(toIndex, 0, moved)
+      return { ...p, groups }
+    }))
+  }
 
   const reorderGroupRequests = (projectId, groupId, fromIndex, toIndex) => {
-    if (fromIndex === toIndex) return;
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+    if (fromIndex === toIndex) return
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
         groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
-          const requests = [...g.requests];
-          if (fromIndex < 0 || fromIndex >= requests.length || toIndex < 0 || toIndex >= requests.length) return g;
-          const [moved] = requests.splice(fromIndex, 1);
-          requests.splice(toIndex, 0, moved);
-          return { ...g, requests };
+          if (g.id !== groupId) return g
+          const requests = [...g.requests]
+          if (fromIndex < 0 || fromIndex >= requests.length || toIndex < 0 || toIndex >= requests.length) return g
+          const [moved] = requests.splice(fromIndex, 1)
+          requests.splice(toIndex, 0, moved)
+          return { ...g, requests }
         }),
-      };
-    }));
-  };
+      }
+    }))
+  }
 
-  const updateRequestFields = (projectId, groupId, entryUid, fieldUpdates) => {
-    if (!Array.isArray(fieldUpdates) || fieldUpdates.length === 0) return;
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+  const updateRequestFields = (projectId, groupId, entryUid, fieldUpdates, level = 'main') => {
+    if (!Array.isArray(fieldUpdates) || fieldUpdates.length === 0) return
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
         groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
-          return {
-            ...g,
-            requests: g.requests.map((r) => {
-              if (r._uid !== entryUid) return r;
-              let next = deepClone(r);
-              for (const { fieldPath, value } of fieldUpdates) next = setPath(next, fieldPath, value);
-              return next;
-            }),
-          };
+          if (g.id !== groupId) return g
+          const listKey = level === 'sub' ? null : 'requests'
+          const target = level === 'sub' ? (g.subGroup?.requests || []) : g.requests
+          const updated = updateRequestList(target, entryUid, (r) => {
+            let next = r
+            for (const { fieldPath, value } of fieldUpdates) {
+              next = setPath(next, fieldPath, value)
+            }
+            return next
+          })
+          if (level === 'sub') {
+            return { ...g, subGroup: { ...(g.subGroup || {}), requests: updated } }
+          }
+          return { ...g, [listKey]: updated }
         }),
-      };
-    }));
-  };
+      }
+    }))
+  }
 
-  const applyResponse = (projectId, groupId, entryUid, response) => {
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+  const applyResponse = (projectId, groupId, entryUid, response, level = 'main') => {
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
         groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
-          return { ...g, requests: g.requests.map((r) => r._uid === entryUid ? { ...r, response: deepClone(response) } : r) };
+          if (g.id !== groupId) return g
+          if (level === 'sub') {
+            const list = g.subGroup?.requests || []
+            return {
+              ...g,
+              subGroup: { ...(g.subGroup || {}), requests: list.map((r) => (r._uid === entryUid ? { ...r, response: deepClone(response) } : r)) },
+            }
+          }
+          return { ...g, requests: g.requests.map((r) => (r._uid === entryUid ? { ...r, response: deepClone(response) } : r)) }
         }),
-      };
-    }));
-  };
+      }
+    }))
+  }
 
-  const resetGroupRequests = (projectId, groupId) => {
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
+  const resetGroupRequests = (projectId, groupId, level = 'main') => {
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
       return {
         ...p,
         groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
-          return {
-            ...g,
-            requests: g.requests.map((r) => ({
+          if (g.id !== groupId) return g
+          const doReset = (r) => ({
+            ...r,
+            request: deepClone(r._initialRequest || r.request),
+            response: deepClone(r._initialResponse || r.response),
+          })
+          if (level === 'sub') {
+            return { ...g, subGroup: { ...(g.subGroup || {}), requests: (g.subGroup?.requests || []).map(doReset) } }
+          }
+          return { ...g, requests: g.requests.map(doReset) }
+        }),
+      }
+    }))
+  }
+
+  const resetSelectedRequests = (projectId, groupId, uids, level = 'main') => {
+    if (!uids || uids.length === 0) return
+    const uidSet = new Set(uids)
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
+      return {
+        ...p,
+        groups: p.groups.map((g) => {
+          if (g.id !== groupId) return g
+          const doReset = (r) => {
+            if (!uidSet.has(r._uid)) return r
+            return {
               ...r,
               request: deepClone(r._initialRequest || r.request),
               response: deepClone(r._initialResponse || r.response),
-            })),
-          };
+            }
+          }
+          if (level === 'sub') {
+            return { ...g, subGroup: { ...(g.subGroup || {}), requests: (g.subGroup?.requests || []).map(doReset) } }
+          }
+          return { ...g, requests: g.requests.map(doReset) }
         }),
-      };
-    }));
-  };
-
-  const resetSelectedRequests = (projectId, groupId, uids) => {
-    if (!uids || uids.length === 0) return;
-    const uidSet = new Set(uids);
-    setProjects((prev) => prev.map((p) => {
-      if (p.id !== projectId) return p;
-      return {
-        ...p,
-        groups: p.groups.map((g) => {
-          if (g.id !== groupId) return g;
-          return {
-            ...g,
-            requests: g.requests.map((r) => {
-              if (!uidSet.has(r._uid)) return r;
-              return {
-                ...r,
-                request: deepClone(r._initialRequest || r.request),
-                response: deepClone(r._initialResponse || r.response),
-              };
-            }),
-          };
-        }),
-      };
-    }));
-  };
+      }
+    }))
+  }
 
   return (
     <ProjectContext.Provider value={{
-      projects, createProject, deleteProject, renameProject,
+      projects, importProject, createProject, deleteProject, renameProject,
       createGroup, renameGroup, updateGroupProxy, deleteGroup, reorderGroups,
-      addRequestsToGroup, addRequestsToSubGroup, 
+      addRequestsToGroup, addRequestsToSubGroup,
       updateGroupRequests, updateSubGroupRequests, reorderGroupRequests,
       updateRequestFields, applyResponse, resetGroupRequests, resetSelectedRequests,
-      updateGroupConfig, removeGroupConfig, updateSubGroup
+      updateGroupConfig, removeGroupConfig, updateSubGroup,
+      getProjectSnapshot,
     }}>
       {children}
     </ProjectContext.Provider>
-  );
+  )
 }
 
 export function useProjects() {
-  const ctx = useContext(ProjectContext);
-  if (!ctx) throw new Error('useProjects 必须在 ProjectProvider 内使用');
-  return ctx;
+  const ctx = useContext(ProjectContext)
+  if (!ctx) throw new Error('useProjects 必须在 ProjectProvider 内使用')
+  return ctx
 }

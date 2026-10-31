@@ -4,11 +4,15 @@ import { Flex, Typography, Button, App, Space, Splitter, Spin, Empty, Tag } from
 import { SendOutlined, CodeOutlined } from '@ant-design/icons';
 import HackvertorEditor from '../components/HackvertorEditor';
 import { processTags } from '../utils/hackTags';
+import { useEnvs } from '../store/envStore';
+import { useScripts } from '../store/scriptStore';
 
 const { Text } = Typography;
 
 export default function ReplayPage({ initialData }) {
   const { message } = App.useApp();
+  const { envs } = useEnvs();
+  const { scripts } = useScripts();
 
   const [rawText, setRawText] = useState('');
   const [sending, setSending] = useState(false);
@@ -21,7 +25,6 @@ export default function ReplayPage({ initialData }) {
     }
   }, [initialData]);
 
-  // 💡 核心：解析左侧完整报文，提取 Method、URL、Headers 和 Body
   const parseRawRequest = (text) => {
     const lines = text.replace(/\r\n/g, '\n').split('\n');
     let method = 'GET', url = '', headers = {}, body = '', idx = 0;
@@ -38,7 +41,7 @@ export default function ReplayPage({ initialData }) {
     
     for (; idx < lines.length; idx++) {
       const line = lines[idx];
-      if (!line.trim()) { idx++; break; } // 遇到空行，Headers 结束
+      if (!line.trim()) { idx++; break; }
       const colon = line.indexOf(':');
       if (colon > 0) {
         const k = line.substring(0, colon).trim();
@@ -55,30 +58,34 @@ export default function ReplayPage({ initialData }) {
   const handleSend = async () => {
     if (!rawText.trim()) return message.warning('请输入请求报文');
     
-    // 1. 解析请求
     const parsed = parseRawRequest(rawText);
     if (!parsed.url) return message.error('无法解析出请求 URL，请检查第一行格式（如: GET https://... HTTP/1.1）');
 
     setSending(true);
 
     try {
-      // 2. 处理标签
+      // 💡 [修复] 补全 ctx：vars / scripts / responses，避免 <@var:> 或 <@script:> 标签崩溃
+      const ctx = { envs, scripts, vars: {}, responses: [] };
+
+      // 💡 [修复] body 处理标签
       let finalBody = parsed.body;
       if (finalBody) {
-        finalBody = await processTags(finalBody);
+        finalBody = await processTags(finalBody, ctx);
       }
 
-      // 3. 过滤掉不允许手动设置的 Headers
+      // 💡 [修复] headers 的 value 也处理标签
       const finalHeaders = {};
       for (const [k, v] of Object.entries(parsed.headers)) {
         if (!['host', 'content-length', 'connection'].includes(k.toLowerCase())) {
-          finalHeaders[k] = v;
+          finalHeaders[k] = await processTags(v, ctx);
         }
       }
 
-      // 4. 发送
+      // 💡 [修复] URL 也处理标签
+      const finalUrl = await processTags(parsed.url, ctx);
+
       const r = await window.electronAPI?.httpRequest({
-        url: parsed.url,
+        url: finalUrl,
         method: parsed.method,
         headers: finalHeaders,
         body: finalBody || undefined,
@@ -97,7 +104,6 @@ export default function ReplayPage({ initialData }) {
 
   return (
     <Flex vertical style={{ height: '100%', background: '#f0f2f5' }}>
-      {/* 顶部精简区 */}
       <Flex align="center" justify="space-between" style={{ padding: '12px 16px', background: '#fff', borderBottom: '1px solid #e8e8e8' }}>
         <Space size={12}>
           <Text strong style={{ fontSize: 16 }}>重发台 (Hackvertor)</Text>

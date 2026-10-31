@@ -1,5 +1,5 @@
 // src/renderer/src/store/replayStore.jsx
-import { createContext, useContext } from 'react';
+import { createContext, useContext } from 'react'
 
-export const ReplayContext = createContext(null);
-export const useReplay = () => useContext(ReplayContext);
+export const ReplayContext = createContext({ sendToReplay: () => {} })
+export const useReplay = () => useContext(ReplayContext) || { sendToReplay: () => {} }

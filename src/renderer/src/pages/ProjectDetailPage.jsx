@@ -1,5 +1,5 @@
 // src/renderer/src/pages/ProjectDetailPage.jsx
-import React, { useEffect, useMemo, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef, useCallback} from 'react';
 import {
   Button, Card, Col, Row, Flex, Tag, Typography, Empty, Popconfirm,
   App as AntApp, Modal, Input, Tooltip, List, Checkbox, InputNumber, Space, Drawer, Badge, Segmented, Table, Dropdown, Divider, Breadcrumb, Form, Splitter
@@ -16,7 +16,7 @@ import { useScripts } from '../store/scriptStore';
 import { useEnvs } from '../store/envStore';
 import RequestWorkbench from '../components/RequestWorkbench';
 import usePersistentState from '../hooks/usePersistentState';
-import { processTags, updateDecTags, extractVarsOnly } from '../utils/hackTags';
+import { processTags, updateOpTags, extractVarsOnly } from '../utils/hackTags';
 import { TRANSFORMS } from '../utils/strictTransforms';
 
 const { Text, Title } = Typography;
@@ -28,7 +28,9 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     projects, deleteProject, updateGroupRequests, updateSubGroupRequests,
     renameGroup, deleteGroup, reorderGroups, reorderGroupRequests,
     updateRequestFields, applyResponse, resetGroupRequests, resetSelectedRequests,
-    updateGroupConfig, removeGroupConfig, updateGroupProxy, updateSubGroup, createGroup
+    updateGroupConfig, removeGroupConfig, updateGroupProxy, updateSubGroup, createGroup,
+    // 💡 [修复] 新增：获取项目最新快照
+    getProjectSnapshot,
   } = useProjects();
   const { scripts } = useScripts();
   const { envs } = useEnvs();
@@ -37,11 +39,9 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const [activeGroupId, setActiveGroupId] = usePersistentState(`ui-proj-${projectId}-group`, null);
   const [activeLevel, setActiveLevel] = useState('main');
   
-  // 执行配置
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [intervalSec, setIntervalSec] = useState(0);
   
-  // 执行状态
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -51,18 +51,15 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   
   const [execLogs, setExecLogs] = useState([]);
   
-  // 监控弹窗状态
   const [monitorModalOpen, setMonitorModalOpen] = useState(false);
   const [execCurrentLevel, setExecCurrentLevel] = useState('-'); 
 
-  // 抽屉状态
   const [subConfigDrawerOpen, setSubConfigDrawerOpen] = useState(false);
   const [algoConfigDrawerOpen, setAlgoConfigDrawerOpen] = useState(false);
 
   const [proxyModalOpen, setProxyModalOpen] = useState(false);
   const [proxyValue, setProxyValue] = useState('');
 
-  // 项目总览页的状态
   const [newGroupModalOpen, setNewGroupModalOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [renamingGroup, setRenamingGroup] = useState(null);
@@ -70,7 +67,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const [draggingIndex, setDraggingIndex] = useState(null);
   const [dropIndex, setDropIndex] = useState(null);
 
-  // 工作区路径及导出相关
   const [basePath, setBasePath] = useState('');
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [selectedExportReqs, setSelectedExportReqs] = useState([]);
@@ -92,9 +88,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
 
   if (!project) return <Flex justify="center" align="center" style={{ height: '100%' }}><Empty description="项目不存在" /></Flex>;
 
-  // ==========================================
-  // 文件相关操作
-  // ==========================================
   const handleBindPath = async () => {
     const r = await window.electronAPI?.workarea?.setPath();
     if (r?.ok) { setBasePath(r.path); message.success('已绑定工作区'); }
@@ -106,6 +99,17 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     const r = await window.electronAPI?.workarea?.mkdir({ folderName });
     if (r?.ok) message.success(`已创建文件夹：${folderName}`);
     else message.error(r?.error || '创建失败');
+  };
+
+  const handleExportProject = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(project, null, 2));
+    const a = document.createElement('a'); 
+    a.setAttribute("href", dataStr); 
+    a.setAttribute("download", `${project.name}_export.json`);
+    document.body.appendChild(a); 
+    a.click(); 
+    a.remove();
+    message.success('项目备份已下载');
   };
 
   const handleExportUserInfo = () => {
@@ -137,9 +141,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     }
   };
 
-  // ==========================================
-  // 项目总览视图
-  // ==========================================
   if (!activeGroup) {
     const handleCreateGroup = () => {
       if (!newGroupName.trim()) return message.warning('请输入请求组名称');
@@ -169,8 +170,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
 
     return (
       <div style={{ padding: '32px 40px', height: '100%', overflow: 'auto', background: '#f5f7fa' }}>
-        
-        {/* 顶部标题区 */}
         <Flex align="center" gap={16} style={{ marginBottom: 32 }}>
           <Button shape="circle" icon={<ArrowLeftOutlined />} onClick={onBack} />
           <div>
@@ -179,20 +178,14 @@ export default function ProjectDetailPage({ projectId, onBack }) {
           </div>
           <div style={{ flex: 1 }} />
           <Space>
-            <Button icon={<DownloadOutlined />} onClick={() => {
-              const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(project, null, 2));
-              const a = document.createElement('a'); a.setAttribute("href", dataStr); a.setAttribute("download", `${project.name}_export.json`);
-              document.body.appendChild(a); a.click(); a.remove();
-            }}>导出项目</Button>
+            <Button icon={<DownloadOutlined />} onClick={handleExportProject}>导出项目</Button>
             <Popconfirm title="删除项目？" description="不可恢复" onConfirm={() => { deleteProject(projectId); onBack?.(); }}>
               <Button danger icon={<DeleteOutlined />}>删除项目</Button>
             </Popconfirm>
           </Space>
         </Flex>
 
-        {/* 请求组卡片区 */}
         <Row gutter={[24, 24]}>
-          {/* 新建请求组卡片 */}
           <Col xs={24} sm={12} md={8} xl={6}>
             <div 
               onClick={() => setNewGroupModalOpen(true)}
@@ -209,7 +202,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
             </div>
           </Col>
 
-          {/* 已有请求组 */}
           {project.groups.map((g, idx) => (
             <Col key={g.id} xs={24} sm={12} md={8} xl={6}>
               <div
@@ -269,9 +261,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     );
   }
 
-  // ==========================================
-  // 请求组详情视图
-  // ==========================================
   const isSubMode = activeLevel === 'sub';
   const currentReqs = isSubMode ? (activeGroup.subGroup?.requests || []) : activeGroup.requests;
   const subConfig = activeGroup.subGroup || { zones: [], successKeyword: '"code":200', maxRetries: 3, judgeVar: 'level', proxy: '' };
@@ -283,18 +272,27 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const mainProxy = activeGroup.proxy || '';
   const currentProxy = isSubMode && subConfig.proxy ? subConfig.proxy : mainProxy;
 
-  const setEntries = (updater) => {
-    const next = typeof updater === 'function' ? updater(currentReqs) : updater;
-    if (!isSubMode) updateGroupRequests(projectId, activeGroup.id, next);
-    else updateSubGroupRequests(projectId, activeGroup.id, next);
-  };
-
-  const saveSubConfig = (patch) => updateSubGroup(projectId, activeGroup.id, { ...subConfig, ...patch });
-  const handleAddZone = () => saveSubConfig({ zones: [...(subConfig.zones || []), { id: uid(), min: 0, max: 0, status: 'none' }] });
-  const handleUpdateZone = (id, field, val) => saveSubConfig({ zones: (subConfig.zones || []).map(z => z.id === id ? { ...z, [field]: val } : z) });
-  const handleDeleteZone = (id) => saveSubConfig({ zones: (subConfig.zones || []).filter(z => z.id !== id) });
-  const handleResetZoneStatus = (id) => saveSubConfig({ zones: (subConfig.zones || []).map(z => z.id === id ? { ...z, status: 'none' } : z) });
-
+  // 💡 [修复 #4] 直接把 updater 交给 store，内部基于最新 state 计算，
+// 避免用渲染期快照 currentReqs 覆盖执行引擎已更新但尚未渲染的结果。
+const setEntries = (updater) => {
+  if (!isSubMode) updateGroupRequests(projectId, activeGroup.id, updater);
+  else updateSubGroupRequests(projectId, activeGroup.id, updater);
+};
+ // 💡 [修复 #3] saveSubConfig 直接传 patch，store 做浅合并；不再依赖外部旧 subConfig
+const saveSubConfig = (patch) => updateSubGroup(projectId, activeGroup.id, patch);
+// 💡 [修复 #3] 用函数式 patch 基于 store 内最新 zones，避免覆盖执行引擎的 updates
+const handleAddZone = () => updateSubGroup(projectId, activeGroup.id, (prev) => ({
+  zones: [...(prev.zones || []), { id: uid(), min: 0, max: 0, status: 'none' }],
+}));
+const handleUpdateZone = (id, field, val) => updateSubGroup(projectId, activeGroup.id, (prev) => ({
+  zones: (prev.zones || []).map(z => (z.id === id ? { ...z, [field]: val } : z)),
+}));
+const handleDeleteZone = (id) => updateSubGroup(projectId, activeGroup.id, (prev) => ({
+  zones: (prev.zones || []).filter(z => z.id !== id),
+}));
+const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, (prev) => ({
+  zones: (prev.zones || []).map(z => (z.id === id ? { ...z, status: 'none' } : z)),
+}));
   const processSingleEntry = async (entry, ctx, source = 'main') => {
     const uid = entry._uid;
     const req = entry.request || {};
@@ -306,32 +304,36 @@ export default function ProjectDetailPage({ projectId, onBack }) {
       let rawBody = req.postData?.text;
       let rawHeaders = req.headers || [];
 
-      if (rawBody) {
-        const newBody = await updateDecTags(rawBody, ctx);
-        if (newBody !== rawBody) { req.postData.text = newBody; rawBody = newBody; updates.push({ fieldPath: 'request.postData.text', value: newBody }); }
+      const allTextFields = [rawUrl, rawBody, ...rawHeaders.map(h => h.value)].filter(Boolean);
+      for (const text of allTextFields) {
+        await extractVarsOnly(text, ctx);
       }
-      const newUrl = await updateDecTags(rawUrl, ctx);
-      if (newUrl !== rawUrl) { req.url = newUrl; rawUrl = newUrl; updates.push({ fieldPath: 'request.url', value: newUrl }); }
+
+      let updatedUrl = await updateOpTags(rawUrl, ctx);
+      let updatedBody = rawBody ? await updateOpTags(rawBody, ctx) : undefined;
+      let updatedHeaders = [...rawHeaders];
       
-      for (let hidx = 0; hidx < rawHeaders.length; hidx++) {
-        const h = rawHeaders[hidx];
-        if (h.value) {
-          const newHVal = await updateDecTags(h.value, ctx);
-          if (newHVal !== h.value) { h.value = newHVal; rawHeaders[hidx] = h; updates.push({ fieldPath: `request.headers.${hidx}.value`, value: newHVal }); }
+      for (let i = 0; i < updatedHeaders.length; i++) {
+        if (updatedHeaders[i].value) {
+          updatedHeaders[i] = { ...updatedHeaders[i], value: await updateOpTags(updatedHeaders[i].value, ctx) };
         }
       }
 
-      rawUrl = await extractVarsOnly(rawUrl, ctx);
-      if (rawBody) rawBody = await extractVarsOnly(rawBody, ctx);
-      for (let hidx = 0; hidx < rawHeaders.length; hidx++) {
-        if (rawHeaders[hidx].value) rawHeaders[hidx].value = await extractVarsOnly(rawHeaders[hidx].value, ctx);
+      if (updatedUrl !== rawUrl) updates.push({ fieldPath: 'request.url', value: updatedUrl });
+      if (updatedBody && updatedBody !== rawBody) updates.push({ fieldPath: 'request.postData.text', value: updatedBody });
+      updatedHeaders.forEach((h, i) => {
+        if (h.value !== rawHeaders[i].value) updates.push({ fieldPath: `request.headers.${i}.value`, value: h.value });
+      });
+      
+      if (updates.length > 0) {
+        updateRequestFields(projectId, activeGroup.id, uid, updates, source === 'sub' ? 'sub' : 'main');
       }
 
-      let finalUrl = await processTags(rawUrl, ctx);
-      let finalBody = rawBody ? await processTags(rawBody, ctx) : undefined;
+      let finalUrl = await processTags(updatedUrl, ctx);
+      let finalBody = updatedBody ? await processTags(updatedBody, ctx) : undefined;
       
       let finalHeaders = {};
-      for (const h of rawHeaders) {
+      for (const h of updatedHeaders) {
         if (h.name && !['host', 'content-length', 'connection'].includes(h.name.toLowerCase())) {
           finalHeaders[h.name] = await processTags(h.value || '', ctx);
         }
@@ -347,9 +349,14 @@ export default function ProjectDetailPage({ projectId, onBack }) {
         status: res.status, statusText: res.statusText, body: res.body || '', timeCost: res.time, source 
       }, ...prev].slice(0, 150));
       
-      if (!isSubMode && source === 'main') {
-        applyResponse(projectId, activeGroup.id, uid, { status: res.status, statusText: res.statusText, headers: res.headers || [], content: { text: res.body, size: res.body?.length || 0, mimeType: 'application/json' }, time: res.time });
-      }
+      applyResponse(projectId, activeGroup.id, uid, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers || [],
+        content: { text: res.body, size: res.body?.length || 0, mimeType: 'application/json' },
+        time: res.time,
+      }, source === 'sub' ? 'sub' : 'main');
+
       return { ...res, _payload: payload };
     } catch (e) {
       ctx.responses.push({ status: 0, headers: [], body: `[ERROR] ${e.message}` });
@@ -370,9 +377,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     
     message.success(isSoloSub ? `开始单独调试副组` : `开始执行主组流程`);
 
-    const mainReqs = JSON.parse(JSON.stringify(activeGroup.requests));
-    const subReqsData = JSON.parse(JSON.stringify(activeGroup.subGroup?.requests || []));
-
     const checkPause = async () => {
       while (pauseFlagRef.current && !stopAfterRoundRef.current) {
         await new Promise(r => setTimeout(r, 500));
@@ -380,6 +384,17 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     };
 
     while (!stopAfterRoundRef.current) {
+      // 💡 [修复] 每轮从 store 重新拉最新快照，让 op 标签累积生效（5→6→7→8）
+      // 若用户在执行期间删除了当前组，主动终止
+      const fresh = getProjectSnapshot(projectId);
+      const freshGroup = fresh?.groups?.find((g) => g.id === activeGroup.id);
+      if (!freshGroup) {
+        message.warning('请求组已被删除，执行终止');
+        break;
+      }
+      const mainReqs = freshGroup.requests || [];
+      const subReqsData = freshGroup.subGroup?.requests || [];
+
       const groupCtx = { vars: {}, responses: [], scripts, envs };
       
       if (!isSoloSub) {
@@ -390,71 +405,81 @@ export default function ProjectDetailPage({ projectId, onBack }) {
         }
       }
 
-      if (subReqsData.length > 0) {
-        await checkPause(); 
+        // 💡 [修复 #3] 每轮基于刚读的快照计算 subConfig，避免闭包旧值
+  const freshSubConfig = freshGroup.subGroup || {
+    zones: [], successKeyword: '"code":200', maxRetries: 3, judgeVar: 'level', proxy: '',
+  };
 
-        const judgeVarName = subConfig.judgeVar || 'level';
-        const judgeVal = isSoloSub ? 999999 : groupCtx.vars[judgeVarName];
-        
-        if (judgeVal !== undefined) {
-          const currLevel = Number(judgeVal);
-          setExecCurrentLevel(currLevel); 
+  if (subReqsData.length > 0) {
+    await checkPause();
 
-          const matchedZone = (subConfig.zones || []).find(z => currLevel >= z.min && currLevel < z.max);
-          
-          if (isSoloSub || (matchedZone && matchedZone.status === 'none')) {
-            let lastSubResponseText = '';
-            let currentRetryCount = 1;
+    const judgeVarName = freshSubConfig.judgeVar || 'level';
+    const judgeVal = isSoloSub ? 999999 : groupCtx.vars[judgeVarName];
 
-            if (pendingSubPayloadRef.current && pendingSubPayloadRef.current.zoneId === (isSoloSub ? 'solo' : matchedZone.id)) {
-              currentRetryCount = pendingSubPayloadRef.current.retryCount;
-              message.warning(`[副组] 原包重试中 (${currentRetryCount}/${subConfig.maxRetries})...`);
-              
-              for (const p of pendingSubPayloadRef.current.payloads) {
-                await checkPause();
-                const res = await window.electronAPI.httpRequest(p);
-                if (res && res.body) lastSubResponseText = res.body;
-                setExecLogs(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: p.url, method: p.method, status: res.status, statusText: res.statusText, body: res.body || '', timeCost: res.time, source: 'sub-retry' }, ...prev].slice(0, 150));
-                await new Promise(r => setTimeout(r, 100));
-              }
-            } else {
-              message.info(`[副组] 正常执行中...`);
-              const subCtx = { vars: groupCtx.vars, responses: [], scripts, envs };
-              let cachedPayloads = [];
-              
-              for (let j = 0; j < subReqsData.length; j++) {
-                await checkPause();
-                const res = await processSingleEntry(subReqsData[j], subCtx, 'sub');
-                if (res && res._payload) {
-                  cachedPayloads.push(res._payload);
-                  if (res.body) lastSubResponseText = res.body;
-                }
-                await new Promise(r => setTimeout(r, 100));
-              }
-              pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: cachedPayloads, retryCount: 1 };
+    if (judgeVal !== undefined) {
+      const currLevel = Number(judgeVal);
+      setExecCurrentLevel(currLevel);
+
+      const matchedZone = (freshSubConfig.zones || []).find(z => currLevel >= z.min && currLevel < z.max);
+
+      if (isSoloSub || (matchedZone && matchedZone.status === 'none')) {
+        let lastSubResponseText = '';
+        let currentRetryCount = 1;
+
+        if (pendingSubPayloadRef.current && pendingSubPayloadRef.current.zoneId === (isSoloSub ? 'solo' : matchedZone.id)) {
+          currentRetryCount = pendingSubPayloadRef.current.retryCount;
+          message.warning(`[副组] 原包重试中 (${currentRetryCount}/${freshSubConfig.maxRetries})...`);
+
+          for (const p of pendingSubPayloadRef.current.payloads) {
+            await checkPause();
+            const res = await window.electronAPI.httpRequest(p);
+            if (res && res.body) lastSubResponseText = res.body;
+            setExecLogs(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: p.url, method: p.method, status: res.status, statusText: res.statusText, body: res.body || '', timeCost: res.time, source: 'sub-retry' }, ...prev].slice(0, 150));
+            await new Promise(r => setTimeout(r, 100));
+          }
+        } else {
+          message.info(`[副组] 正常执行中...`);
+          const subCtx = { vars: groupCtx.vars, responses: [], scripts, envs };
+          let cachedPayloads = [];
+
+          for (let j = 0; j < subReqsData.length; j++) {
+            await checkPause();
+            const res = await processSingleEntry(subReqsData[j], subCtx, 'sub');
+            if (res && res._payload) {
+              cachedPayloads.push(res._payload);
+              if (res.body) lastSubResponseText = res.body;
             }
+            await new Promise(r => setTimeout(r, 100));
+          }
+          pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: cachedPayloads, retryCount: 1 };
+        }
 
-            if (lastSubResponseText.includes(subConfig.successKeyword)) {
-              message.success(`[副组] 响应成功！`);
-              if (!isSoloSub && matchedZone) {
-                saveSubConfig({ zones: subConfig.zones.map(z => z.id === matchedZone.id ? { ...z, status: 'success' } : z) });
-              }
-              pendingSubPayloadRef.current = null;
-            } else {
-              if (currentRetryCount >= (subConfig.maxRetries || 3)) {
-                message.error(`[副组] 达到最大重试次数，标记为死局！`);
-                if (!isSoloSub && matchedZone) {
-                  saveSubConfig({ zones: subConfig.zones.map(z => z.id === matchedZone.id ? { ...z, status: 'failed' } : z) });
-                }
-                pendingSubPayloadRef.current = null;
-              } else {
-                message.warning(`[副组] 失败，等待主循环原包重试...`);
-                pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: pendingSubPayloadRef.current.payloads, retryCount: currentRetryCount + 1 };
-              }
+        if (lastSubResponseText.includes(freshSubConfig.successKeyword)) {
+          message.success(`[副组] 响应成功！`);
+          if (!isSubMode && matchedZone) {
+            // 💡 [修复 #3] 函数式 patch，基于 store 内最新 zones
+            updateSubGroup(projectId, activeGroup.id, (prev) => ({
+              zones: (prev.zones || []).map(z => (z.id === matchedZone.id ? { ...z, status: 'success' } : z)),
+            }));
+          }
+          pendingSubPayloadRef.current = null;
+        } else {
+          if (currentRetryCount >= (freshSubConfig.maxRetries || 3)) {
+            message.error(`[副组] 达到最大重试次数，标记为死局！`);
+            if (!isSubMode && matchedZone) {
+              updateSubGroup(projectId, activeGroup.id, (prev) => ({
+                zones: (prev.zones || []).map(z => (z.id === matchedZone.id ? { ...z, status: 'failed' } : z)),
+              }));
             }
+            pendingSubPayloadRef.current = null;
+          } else {
+            message.warning(`[副组] 失败，等待主循环原包重试...`);
+            pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: pendingSubPayloadRef.current.payloads, retryCount: currentRetryCount + 1 };
           }
         }
       }
+    }
+  }
 
       if (stopAfterRoundRef.current) {
         message.success('当前组已完整执行完毕，任务平滑停止。');
@@ -487,19 +512,13 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     { key: 'runJs', label: '运行 run.js', icon: <PlayCircleOutlined />, onClick: () => setRunJsModalOpen(true) },
     { type: 'divider' },
     { key: 'proxy', label: `${isSubMode ? '副组' : '主组'}代理设置`, icon: <GlobalOutlined />, onClick: () => { setProxyValue(isSubMode ? subConfig.proxy : mainProxy); setProxyModalOpen(true); } },
-    { key: 'export', label: '导出当前项目', icon: <DownloadOutlined />, onClick: () => {
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(project, null, 2));
-      const a = document.createElement('a'); a.setAttribute("href", dataStr); a.setAttribute("download", `${project.name}_export.json`);
-      document.body.appendChild(a); a.click(); a.remove();
-    }},
+    { key: 'export', label: '导出当前项目', icon: <DownloadOutlined />, onClick: handleExportProject },
     { type: 'divider' },
     { key: 'reset', label: '重置全组请求', icon: <ReloadOutlined />, danger: true, disabled: isRunning || isSubMode, onClick: () => { resetGroupRequests(projectId, activeGroup.id); message.success('主组已重置'); } },
   ];
 
   return (
     <Flex vertical style={{ height: '100%', background: '#fff' }}>
-      
-      {/* 💡 顶部极简工具栏 */}
       <div style={{ 
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', 
         padding: '8px 16px', background: '#fff',
@@ -528,11 +547,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
 
         <Space size={12}>
           <Tooltip title="配置当前组使用的算法密钥">
-            <Button 
-              size="small" 
-              icon={<KeyOutlined />} 
-              onClick={() => setAlgoConfigDrawerOpen(true)}
-            >
+            <Button size="small" icon={<KeyOutlined />} onClick={() => setAlgoConfigDrawerOpen(true)}>
               密钥
             </Button>
           </Tooltip>
@@ -588,7 +603,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
           entries={currentReqs} setEntries={setEntries} projectId={projectId}
           showSelection={false} showAddToProject={false}
           onResetSelected={(uids) => {
-            resetSelectedRequests(projectId, activeGroup.id, uids);
+            resetSelectedRequests(projectId, activeGroup.id, uids, activeLevel);
             message.success(`已精准重置选中的 ${uids.length} 条请求`);
           }}
           groupConfigs={currentConfigs}
@@ -596,12 +611,11 @@ export default function ProjectDetailPage({ projectId, onBack }) {
           headerTopExtra={null}
           enableDrag={!isSubMode}
           onReorder={(from, to) => reorderGroupRequests(projectId, activeGroup.id, from, to)}
-          onUpdateRequest={(uid, updates) => updateRequestFields(projectId, activeGroup.id, uid, updates)}
-          onUpdateResponse={(uid, response) => applyResponse(projectId, activeGroup.id, uid, response)}
+          onUpdateRequest={(uid, updates) => updateRequestFields(projectId, activeGroup.id, uid, updates, activeLevel)}
+          onUpdateResponse={(uid, response) => applyResponse(projectId, activeGroup.id, uid, response, activeLevel)}
         />
       </div>
 
-      {/* 💡 核心：执行监控弹窗（左右布局） */}
       <Modal
         title="请求组执行监控"
         open={monitorModalOpen}
@@ -622,7 +636,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
         ]}
       >
         <Splitter style={{ height: '65vh', border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
-          {/* 左侧：阶梯实时状态 */}
           <Splitter.Panel defaultSize="30%" min="20%">
             <Flex vertical style={{ height: '100%', background: '#fafafa' }}>
               <div style={{ padding: '12px 16px', background: '#f0f2f5', borderBottom: '1px solid #e5e7eb' }}>
@@ -652,7 +665,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
             </Flex>
           </Splitter.Panel>
 
-          {/* 右侧：实时响应输出 */}
           <Splitter.Panel>
             <Flex vertical style={{ height: '100%', background: '#1e1e1e' }}>
               <div style={{ padding: '8px 12px', background: '#2d2d2d', borderBottom: '1px solid #3e3e3e', color: '#ccc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -695,7 +707,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
         </Splitter>
       </Modal>
 
-      {/* 密钥配置抽屉 */}
       <Drawer 
         title={<Space><KeyOutlined /> {isSubMode ? '副组' : '主组'} 算法密钥配置</Space>} 
         placement="right" width={450} 
@@ -738,7 +749,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
         )}
       </Drawer>
 
-      {/* 副组阶梯配置抽屉 */}
       <Drawer title={<Space><SettingOutlined /> 副组阶梯配置</Space>} placement="right" width={550} onClose={() => setSubConfigDrawerOpen(false)} open={subConfigDrawerOpen}>
         <Flex vertical gap={16}>
           <Card size="small" title="基础设置" variant="borderless" style={{ background: '#fafafa' }}>

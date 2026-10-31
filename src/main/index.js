@@ -8,8 +8,40 @@ import { spawn } from 'child_process'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
+const CONFIG_FILE = () => join(app.getPath('userData'), 'config.json')
 let globalBasePath = app.getPath('documents')
-let runTimer = null
+
+// 统一安全路径段：拒绝 .. / . / 空 / 隐藏文件 / Windows 保留名
+const WINDOWS_RESERVED = new Set(['con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9', 'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9'])
+function safeSegment(name, { allowDotPrefix = false } = {}) {
+  if (typeof name !== 'string') return null
+  let s = name.trim()
+  if (!s) return null
+  s = s.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+  if (s === '.' || s === '..' || s.includes('..')) return null
+  if (!allowDotPrefix && s.startsWith('.')) return null
+  s = s.replace(/[. ]+$/, '')
+  if (!s) return null
+  const stem = s.split('.')[0].toLowerCase()
+  if (WINDOWS_RESERVED.has(stem)) return null
+  return s
+}
+
+function loadConfig() {
+  try {
+    const raw = fs.readFileSync(CONFIG_FILE(), 'utf8')
+    const cfg = JSON.parse(raw)
+    if (typeof cfg.basePath === 'string' && fs.existsSync(cfg.basePath)) {
+      globalBasePath = cfg.basePath
+    }
+  } catch {}
+}
+function saveConfig() {
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true })
+    fs.writeFileSync(CONFIG_FILE(), JSON.stringify({ basePath: globalBasePath }, null, 2), 'utf8')
+  } catch (e) { console.warn('[config] 保存失败:', e) }
+}
 
 function getLibsDir() {
   const dir = join(app.getPath('userData'), 'libs')
@@ -21,7 +53,19 @@ function safeLibName(fileName) {
   if (typeof fileName !== 'string') return null
   if (!/^[\w.-]+\.js$/.test(fileName)) return null
   if (fileName.includes('..')) return null
+  if (WINDOWS_RESERVED.has(fileName.split('.')[0].toLowerCase())) return null
   return fileName
+}
+
+// 子进程管理
+const runningChildren = new Set()
+let runTimer = null
+
+function stopAllChildren() {
+  for (const child of runningChildren) {
+    try { child.kill('SIGTERM') } catch {}
+  }
+  runningChildren.clear()
 }
 
 function registerLibHandlers() {
@@ -34,7 +78,10 @@ function registerLibHandlers() {
     try {
       const dir = getLibsDir()
       const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'))
-      return { ok: true, dir, libs: files.map((f) => ({ fileName: f, size: fs.statSync(join(dir, f)).size, mtime: fs.statSync(join(dir, f)).mtimeMs })) }
+      return { ok: true, dir, libs: files.map((f) => {
+        const st = fs.statSync(join(dir, f))
+        return { fileName: f, size: st.size, mtime: st.mtimeMs }
+      })}
     } catch (e) { return { ok: false, error: String(e?.message || e), libs: [], dir: getLibsDir() } }
   })
   ipcMain.handle('lib:import', async () => {
@@ -66,13 +113,19 @@ function registerLibHandlers() {
 function registerWorkareaHandlers() {
   ipcMain.handle('workarea:set-path', async () => {
     const result = await dialog.showOpenDialog({ title: '选择绑定的工作目录', properties: ['openDirectory', 'createDirectory'] })
-    if (!result.canceled && result.filePaths.length > 0) { globalBasePath = result.filePaths[0]; return { ok: true, path: globalBasePath } }
+    if (!result.canceled && result.filePaths.length > 0) {
+      globalBasePath = result.filePaths[0]
+      saveConfig()
+      return { ok: true, path: globalBasePath }
+    }
     return { ok: false, canceled: true }
   })
   ipcMain.handle('workarea:get-path', () => ({ ok: true, path: globalBasePath }))
+
   ipcMain.handle('workarea:mkdir', (_e, { folderName }) => {
     try {
-      const safeName = folderName.replace(/[<>:"/\\|?*]/g, '_')
+      const safeName = safeSegment(folderName)
+      if (!safeName) throw new Error('非法文件夹名')
       const fullPath = join(globalBasePath, safeName)
       if (!fs.existsSync(fullPath)) fs.mkdirSync(fullPath, { recursive: true })
       return { ok: true, path: fullPath }
@@ -80,8 +133,9 @@ function registerWorkareaHandlers() {
   })
   ipcMain.handle('workarea:write-json', (_e, { folderName, fileName, data }) => {
     try {
-      const safeFolder = folderName.replace(/[<>:"/\\|?*]/g, '_')
-      const safeFile = fileName.replace(/[<>:"/\\|?*]/g, '_')
+      const safeFolder = safeSegment(folderName)
+      const safeFile = safeSegment(fileName)
+      if (!safeFolder || !safeFile) throw new Error('非法文件夹/文件名')
       const dir = join(globalBasePath, safeFolder)
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
       const filePath = join(dir, safeFile)
@@ -89,36 +143,59 @@ function registerWorkareaHandlers() {
       return { ok: true, path: filePath }
     } catch (e) { return { ok: false, error: String(e?.message || e) } }
   })
+
   ipcMain.handle('workarea:run', (_e, { folderName, intervalSec }) => {
     try {
-      if (runTimer) clearInterval(runTimer)
-      const safeFolder = folderName.replace(/[<>:"/\\|?*]/g, '_')
-      const runJsPath = join(globalBasePath, safeFolder, 'run.js')
+      if (runTimer) { clearInterval(runTimer); runTimer = null }
+      const safeFolder = safeSegment(folderName)
+      if (!safeFolder) return { ok: false, error: '非法文件夹名' }
+      const dir = join(globalBasePath, safeFolder)
+      const runJsPath = join(dir, 'run.js')
       if (!fs.existsSync(runJsPath)) return { ok: false, error: `未找到 run.js：${runJsPath}` }
+
       const execute = () => {
-        const child = spawn('node', [runJsPath], { cwd: join(globalBasePath, safeFolder) })
+        const child = spawn(process.execPath, [runJsPath], {
+          cwd: dir,
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        })
+        runningChildren.add(child)
         child.stdout.on('data', (d) => console.log(`[Run stdout] ${d}`))
         child.stderr.on('data', (d) => console.error(`[Run stderr] ${d}`))
+        child.on('error', (err) => console.error('[Run spawn error]', err))
+        child.on('exit', () => runningChildren.delete(child))
       }
       execute()
-      if (intervalSec > 0) runTimer = setInterval(execute, intervalSec * 1000)
-      return { ok: true, msg: intervalSec > 0 ? `已启动，每 ${intervalSec}s 执行一次` : '已执行一次' }
+      const sec = Number(intervalSec) || 0
+      if (sec > 0) runTimer = setInterval(execute, sec * 1000)
+      return { ok: true, msg: sec > 0 ? `已启动，每 ${sec}s 执行一次` : '已执行一次' }
     } catch (e) { return { ok: false, error: String(e?.message || e) } }
   })
   ipcMain.handle('workarea:stop-run', () => {
     if (runTimer) { clearInterval(runTimer); runTimer = null }
+    stopAllChildren()
     return { ok: true }
   })
 }
 
+// proxy session LRU 限制
 const proxySessionCache = new Map()
+const PROXY_CACHE_MAX = 16
 async function getProxySession(proxyUrl) {
   if (!proxyUrl) return null
-  if (proxySessionCache.has(proxyUrl)) return proxySessionCache.get(proxyUrl)
+  if (proxySessionCache.has(proxyUrl)) {
+    const s = proxySessionCache.get(proxyUrl)
+    proxySessionCache.delete(proxyUrl)
+    proxySessionCache.set(proxyUrl, s)
+    return s
+  }
   const tag = Buffer.from(proxyUrl).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 20)
   const sess = session.fromPartition(`persist:proxy-${tag}`)
   await sess.setProxy({ proxyRules: proxyUrl })
   proxySessionCache.set(proxyUrl, sess)
+  while (proxySessionCache.size > PROXY_CACHE_MAX) {
+    const [k] = proxySessionCache.keys()
+    proxySessionCache.delete(k)
+  }
   return sess
 }
 
@@ -133,15 +210,17 @@ function registerHttpHandler() {
       try { proxySession = await getProxySession(proxy) } catch (e) { return { status: 0, statusText: 'error', body: `[proxy error] ${e.message}`, headers: [], time: 0 } }
     }
     return new Promise((resolve) => {
+      let settled = false
+      const finish = (val) => { if (!settled) { settled = true; resolve(val) } }
       let request
       try {
         const opts = { url, method: (method || 'GET').toUpperCase(), redirect: 'follow' }
         if (proxySession) opts.session = proxySession
         request = net.request(opts)
-      } catch (e) { return resolve({ status: 0, statusText: 'error', body: `[net.request 失败] ${e.message}`, headers: [], time: 0 }) }
+      } catch (e) { return finish({ status: 0, statusText: 'error', body: `[net.request 失败] ${e.message}`, headers: [], time: 0 }) }
       const timer = setTimeout(() => {
         try { request.abort() } catch {}
-        resolve({ status: 0, statusText: 'timeout', body: `请求超时（${timeoutMs}ms）\nurl=${url}`, headers: [], time: Date.now() - started })
+        finish({ status: 0, statusText: 'timeout', body: `请求超时（${timeoutMs}ms）\nurl=${url}`, headers: [], time: Date.now() - started })
       }, timeoutMs)
       Object.entries(headers || {}).forEach(([k, v]) => { try { request.setHeader(k, v) } catch {} })
       request.on('response', (response) => {
@@ -149,7 +228,7 @@ function registerHttpHandler() {
         response.on('data', (c) => chunks.push(Buffer.from(c)))
         response.on('end', () => {
           clearTimeout(timer)
-          resolve({
+          finish({
             status: response.statusCode,
             statusText: response.statusMessage || '',
             headers: Object.entries(response.headers || {}).map(([k, v]) => ({ name: k, value: Array.isArray(v) ? v.join(', ') : String(v) })),
@@ -157,20 +236,21 @@ function registerHttpHandler() {
             time: Date.now() - started,
           })
         })
-        response.on('error', (err) => { clearTimeout(timer); resolve({ status: 0, statusText: 'error', body: `[response error] ${err.message}`, headers: [], time: Date.now() - started }) })
+        response.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[response error] ${err.message}`, headers: [], time: Date.now() - started }) })
       })
-      request.on('error', (err) => { clearTimeout(timer); resolve({ status: 0, statusText: 'error', body: `[net error] ${err.message || err}`, headers: [], time: Date.now() - started }) })
+      request.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[net error] ${err.message || err}`, headers: [], time: Date.now() - started }) })
       try {
-        if (body != null) request.write(typeof body === 'string' ? body : JSON.stringify(body))
+        if (body != null) {
+          if (body instanceof Uint8Array || Buffer.isBuffer(body)) request.write(Buffer.from(body))
+          else request.write(typeof body === 'string' ? body : JSON.stringify(body))
+        }
         request.end()
-      } catch (e) { clearTimeout(timer); resolve({ status: 0, statusText: 'error', body: `[write error] ${e.message}`, headers: [], time: Date.now() - started }) }
+      } catch (e) { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[write error] ${e.message}`, headers: [], time: Date.now() - started }) }
     })
   })
 }
 
-function aesCipherName(kind, keyLen) {
-  return `aes-${keyLen * 8}-${kind}`
-}
+function aesCipherName(kind, keyLen) { return `aes-${keyLen * 8}-${kind}` }
 
 function registerCryptoHandler() {
   ipcMain.handle('crypto:transform', async (_e, { type, input, options = {} }) => {
@@ -189,12 +269,12 @@ function registerCryptoHandler() {
         case 'jiem-decompress': {
           const buf = Buffer.from(s, 'base64')
           if (buf.length < 8) throw new Error('数据长度 < 8 字节')
-          buf[0] = 0x1f; buf[1] = 0x8b; buf[2] = 0x08; buf[4] = 0x00; buf[5] = 0x00; buf[6] = 0x00; buf[7] = 0x00;
+          buf[0] = 0x1f; buf[1] = 0x8b; buf[2] = 0x08; buf[4] = 0x00; buf[5] = 0x00; buf[6] = 0x00; buf[7] = 0x00
           return { ok: true, value: zlib.gunzipSync(buf).toString('utf8') }
         }
         case 'jiem-compress': {
           const compressed = zlib.gzipSync(Buffer.from(s, 'utf8'))
-          compressed[0] = 0x01; compressed[1] = 0x01; compressed[2] = 0x01; compressed[4] = 0x01; compressed[5] = 0x01; compressed[6] = 0x01; compressed[7] = 0x01;
+          compressed[0] = 0x01; compressed[1] = 0x01; compressed[2] = 0x01; compressed[4] = 0x01; compressed[5] = 0x01; compressed[6] = 0x01; compressed[7] = 0x01
           return { ok: true, value: compressed.toString('base64') }
         }
         case 'qm': {
@@ -256,43 +336,66 @@ function registerCryptoHandler() {
   })
 }
 
+// ============================================================
+// 💡 [修复] script:run 统一注入 require / module / exports / 路径 / ctx
+//    - script 标签与 js-expression 都走这一条路径
+//    - 不再区分 context 有无，两种调用参数统一
+// ============================================================
 function registerScriptHandler() {
   ipcMain.handle('script:run', async (_e, { code, input, config, context }) => {
     try {
       const { createRequire } = await import('module')
-      const req = createRequire(import.meta.url)
-      
-      if (context) {
-        const crypto = (await import('crypto')).default;
-        const md5Fn = (text) => crypto.createHash('md5').update(String(text)).digest('hex');
-        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-        const fn = new AsyncFunction('input', 'vars', 'envs', 'responses', 'md5', `"use strict";\n${code}`);
-        const r = await fn(input, context.vars || {}, context.envs || {}, context.responses || [], md5Fn);
-        return { ok: true, value: r == null ? '' : (typeof r === 'object' ? JSON.stringify(r) : String(r)) };
+      const libsDir = getLibsDir()
+      // require 基准指向 libs 目录，用户脚本 require('./xxx') 相对 libs
+      const req = createRequire(join(libsDir, '_runner.js'))
+
+      const processResult = (res) => {
+        if (res == null) return ''
+        if (Buffer.isBuffer(res) || res instanceof Uint8Array) return res
+        if (typeof res === 'object') return JSON.stringify(res)
+        return String(res)
       }
 
-      const mod = { exports: {} }
-      const ctx = { config, input }
-      const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-      const fn = new AsyncFunction(
-        'input', 'ctx', 'require', 'module', 'exports', 
-        'USER_DATA_PATH', 'APP_PATH', 'RESOURCES_PATH', 'LIBS_PATH', code
-      );
-      
-      const directResult = await fn(
-        input, ctx, req, mod, mod.exports, 
-        app.getPath('userData'), app.getAppPath(), process.resourcesPath, getLibsDir()
-      );
-      
-      if (directResult !== undefined) return { ok: true, value: directResult };
-      
-      const exportedFn = mod.exports || mod.export;
-      if (typeof exportedFn === 'function') {
-        const result = await exportedFn(input, ctx);
-        return { ok: true, value: result };
+      const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor
+
+      // 💡 统一 ctx：config 兼容 script 标签传值；vars/envs/responses 兼容 js-expression
+      const ctx = {
+        config: config || {},
+        input,
+        vars: context?.vars || {},
+        envs: context?.envs || {},
+        responses: context?.responses || [],
       }
-      
-      return { ok: true, value: input };
+
+      // md5 便捷函数（两种脚本都可用）
+      const cryptoMod = (await import('crypto')).default
+      const md5Fn = (text) => cryptoMod.createHash('md5').update(String(text)).digest('hex')
+
+      // 💡 统一参数列表：require / module / exports / 4 个路径常量 / vars / envs / responses / md5 / config
+      const fn = new AsyncFunction(
+        'input', 'ctx', 'require', 'module', 'exports',
+        'USER_DATA_PATH', 'APP_PATH', 'RESOURCES_PATH', 'LIBS_PATH',
+        'vars', 'envs', 'responses', 'md5', 'config',
+        `"use strict";\n${code}`
+      )
+
+      const mod = { exports: {} }
+      const directResult = await fn(
+        input, ctx, req, mod, mod.exports,
+        app.getPath('userData'), app.getAppPath(), process.resourcesPath, libsDir,
+        ctx.vars, ctx.envs, ctx.responses, md5Fn, ctx.config
+      )
+
+      // 写法 1：直接 return
+      if (directResult !== undefined) return { ok: true, value: processResult(directResult) }
+
+      // 写法 2：module.exports = function(input, ctx) { ... }
+      const exportedFn = mod.exports?.default || mod.exports
+      if (typeof exportedFn === 'function') {
+        const result = await exportedFn(input, ctx)
+        return { ok: true, value: processResult(result) }
+      }
+      return { ok: true, value: input }
     } catch (e) {
       return { ok: false, error: String(e?.stack || e?.message || e) }
     }
@@ -309,17 +412,13 @@ function createWindow() {
     },
   })
   mainWindow.on('ready-to-show', () => mainWindow.show())
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url); return { action: 'deny' }
-  })
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
+  mainWindow.webContents.setWindowOpenHandler((details) => { shell.openExternal(details.url); return { action: 'deny' } })
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  else mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
 app.whenReady().then(() => {
+  loadConfig()
   electronApp.setAppUserModelId('com.electron')
   app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
   registerHttpHandler()
@@ -331,5 +430,9 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  if (runTimer) clearInterval(runTimer)
+  stopAllChildren()
   if (process.platform !== 'darwin') app.quit()
 })
+
+app.on('before-quit', () => { if (runTimer) clearInterval(runTimer); stopAllChildren() })

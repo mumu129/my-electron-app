@@ -1,13 +1,14 @@
 // src/renderer/src/components/HackvertorEditor.jsx
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Flex, Modal, Form, Input, Tag, Space, Typography, App, List, Button, Splitter, Segmented } from 'antd';
+import { Switch,Flex, Modal, Form, Input, Tag, Space, Typography, App, List, Button, Splitter, Segmented } from 'antd';
 import { 
   TagOutlined, CodeOutlined, SafetyCertificateOutlined, SearchOutlined, 
   MenuFoldOutlined, MenuUnfoldOutlined 
 } from '@ant-design/icons';
 import { processTags, wrapTag } from '../utils/hackTags';
-import { TRANSFORMS, TRANSFORM_GROUPS, applyTransform } from '../utils/strictTransforms';
+import { TRANSFORMS, TRANSFORM_GROUPS, applyTransform, getAlgoTagType } from '../utils/strictTransforms';
 import { useScripts } from '../store/scriptStore';
+import { useEnvs } from '../store/envStore';
 
 const { Text } = Typography;
 
@@ -23,19 +24,19 @@ function highlightText(text) {
   return escaped.replace(/&lt;@(.*?)&gt;|&lt;\/@(.*?)&gt;/g, (match, open, close) => {
     let color = '#d4b106';
     if (open) {
-      if (open.startsWith('dec:')) color = '#cf1322';
-      else if (open.startsWith('enc:')) color = '#389e0d';
+      if (open.startsWith('op:')) color = '#cf1322'; 
+      else if (open.startsWith('enc:')) color = '#389e0d'; 
       else if (open.startsWith('var:')) color = '#1677ff';
       else if (open.startsWith('script:')) color = '#fa8c16';
       else if (open.startsWith('env:')) color = '#eb2f96';
     } else if (close) {
-      if (close.startsWith('dec:')) color = '#cf1322';
+      if (close.startsWith('op:')) color = '#cf1322';
       else if (close.startsWith('enc:')) color = '#389e0d';
       else if (close.startsWith('var:')) color = '#1677ff';
       else if (close.startsWith('script:')) color = '#fa8c16';
       else if (close.startsWith('env:')) color = '#eb2f96';
     }
-    return `<span style="color: ${color}; font-weight: bold;">${match}</span>`;
+    return `<span style="color: ${color}; ">${match}</span>`;
   });
 }
 
@@ -99,9 +100,9 @@ function JsonTree({ data, isRoot = false }) {
 export default function HackvertorEditor({ value, onChange, placeholder, readOnly = false, groupConfigs = {}, onSaveGroupConfig }) {
   const { message } = App.useApp();
   const { scripts } = useScripts();
+  const { envs } = useEnvs();
   
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerMode, setPickerMode] = useState('decrypt');
   const [searchText, setSearchText] = useState('');
   const [selectedText, setSelectedText] = useState({ text: '', start: 0, end: 0 });
   const [paramModal, setParamModal] = useState({ visible: false, action: null });
@@ -118,27 +119,37 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
   const textareaRef = useRef(null);
   const preRef = useRef(null);
   const pendingSelectRef = useRef(null);
-
+ const userToggledPreviewRef = useRef(false);
   useEffect(() => {
-    let canceled = false;
-    setIsRendering(true);
-    processTags(value || '', { scripts })
-      .then((res) => {
-        if (canceled) return;
-        setRenderedValue(res);
-        try {
-          const parsed = JSON.parse(res);
-          setRenderedJson(parsed);
-          if (previewMode === 'text' && typeof parsed === 'object') setPreviewMode('tree');
-        } catch {
-          setRenderedJson(null);
-          setPreviewMode('text'); 
+  let canceled = false;
+  setIsRendering(true);
+  processTags(value || '', { scripts, envs, vars: {}, responses: [] })
+    .then((res) => {
+      if (canceled) return;
+      if (res instanceof Uint8Array) {
+        setRenderedValue(`[Binary Data (${res.length} bytes)]`);
+        setRenderedJson(null);
+        setPreviewMode('text');
+        return;
+      }
+      setRenderedValue(res);
+      try {
+        const parsed = JSON.parse(res);
+        setRenderedJson(parsed);
+        // 💡 [修复 #6] 只在用户没手动切换过时自动切到树形
+        if (!userToggledPreviewRef.current && typeof parsed === 'object' && parsed !== null) {
+          setPreviewMode('tree');
         }
-      })
-      .catch((err) => { if (!canceled) setRenderedValue(`[渲染错误: ${err.message}]`); })
-      .finally(() => { if (!canceled) setIsRendering(false); });
-    return () => { canceled = true; };
-  }, [value, scripts]);
+      } catch {
+        setRenderedJson(null);
+        // 💡 [修复 #6] 解析失败时也尊重用户选择：只有用户没动过才强制回文本
+        if (!userToggledPreviewRef.current) setPreviewMode('text');
+      }
+    })
+    .catch((err) => { if (!canceled) setRenderedValue(`[渲染错误: ${err.message}]`); })
+    .finally(() => { if (!canceled) setIsRendering(false); });
+  return () => { canceled = true; };
+}, [value, scripts, envs]);
 
   useEffect(() => {
     if (!pendingSelectRef.current) return;
@@ -163,23 +174,18 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     const { selectionStart: s, selectionEnd: t } = el;
     if (s === t) { message.warning('请先选中一段文本再右键'); return; }
     setSelectedText({ text: el.value.substring(s, t), start: s, end: t });
-    setPickerMode('decrypt');
     setSearchText('');
     setPickerOpen(true);
   };
 
   const filteredAlgos = useMemo(() => {
     const kw = searchText.toLowerCase();
-    const isEnc = pickerMode === 'encrypt';
     
-    let builtin = Object.entries(TRANSFORMS).filter(([k, v]) => {
-      const validDir = v.direction === 'both' || (isEnc ? v.direction === 'encode-only' : v.direction === 'decode-only');
-      if (!validDir) return false;
-      const label = isEnc ? (v.encodeLabel || v.label) : (v.decodeLabel || v.label);
-      return label.toLowerCase().includes(kw) || k.toLowerCase().includes(kw);
-    }).map(([k, v]) => ({ key: k, type: 'builtin', label: isEnc ? (v.encodeLabel || v.label) : (v.decodeLabel || v.label), group: v.group || 'other', tpl: v }));
+    let builtin = Object.entries(TRANSFORMS)
+      .filter(([k, v]) => (v.label.toLowerCase().includes(kw) || k.toLowerCase().includes(kw)))
+      .map(([k, v]) => ({ key: k, type: 'builtin', label: v.label, group: v.group || 'other', tpl: v }));
 
-    if (!isEnc && ('提取为变量'.includes(kw) || 'var'.includes(kw))) {
+    if ('提取为变量'.includes(kw) || 'var'.includes(kw)) {
       builtin.unshift({
         key: '__extract_var__', type: 'var', label: '📦 提取为变量 (供 JS 调用)', group: 'app', tpl: null
       });
@@ -189,14 +195,14 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
       .filter(([k, v]) => (v.label || k).toLowerCase().includes(kw) || k.toLowerCase().includes(kw))
       .map(([k, v]) => ({ 
         key: k, 
-        type: isEnc ? 'script-enc' : 'script', 
-        label: (isEnc ? '⚙️ ' : '⚙️ ') + (v.label || k), 
+        type: 'script', 
+        label: '⚙️ ' + (v.label || k), 
         group: 'script', 
         tpl: v 
       }));
 
     return [...builtin, ...customScripts];
-  }, [searchText, pickerMode, scripts]);
+  }, [searchText, scripts]);
 
   const groupedAlgos = useMemo(() => {
     const groups = {};
@@ -214,26 +220,16 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
       return;
     }
 
-    if (item.type === 'script' || item.type === 'script-enc') {
-      let resultText = selectedText.text;
-      try {
-        const scriptDef = scripts[item.key];
-        if (scriptDef && scriptDef.code) {
-          const r = await window.electronAPI.script.run({ code: scriptDef.code, input: selectedText.text, config: {} });
-          if (r.ok) resultText = r.value;
-          else message.warning(`脚本报错: ${r.error}`);
-        }
-      } catch (e) { message.warning(`脚本执行失败: ${e.message}`); }
-
-      const tagName = item.type === 'script-enc' ? `enc:script-${item.key}` : `script:${item.key}`;
-      const wrapped = wrapTag(tagName, resultText);
+    if (item.type === 'script') {
+      const resultText = selectedText.text;
+      const wrapped = wrapTag(`script:${item.key}`, resultText);
       
       const { newText } = commitReplacement(value, selectedText.start, selectedText.end, wrapped);
       const innerStart = selectedText.start + wrapped.indexOf(resultText);
       pendingSelectRef.current = { start: innerStart, end: innerStart + resultText.length };
       
       onChange(newText);
-      message.success(`已应用主进程脚本`);
+      message.success(`已添加主进程脚本`);
       setPickerOpen(false);
       return;
     }
@@ -245,41 +241,40 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
       const hasAllRequired = tpl.configFields.every(f => !f.required || (savedConfig && savedConfig[f.name]));
       
       if (savedConfig && hasAllRequired) {
-        doTransform(item.key, pickerMode, savedConfig);
+        doTransform(item.key, savedConfig);
       } else {
         form.resetFields();
         const defaults = savedConfig || {};
         tpl.configFields.forEach((f) => { if (f.defaultValue && !defaults[f.name]) defaults[f.name] = f.defaultValue; });
         form.setFieldsValue(defaults);
-        setParamModal({ visible: true, action: { algoKey: item.key, type: pickerMode } });
+        setParamModal({ visible: true, action: { algoKey: item.key } });
         setPickerOpen(false);
       }
     } else {
-      doTransform(item.key, pickerMode, {});
+      doTransform(item.key, {});
     }
   };
 
-  const doTransform = async (algoKey, type, config) => {
-    let resultText = selectedText.text;
-    
-    if (type === 'decrypt') {
-      try {
-        resultText = await applyTransform({ key: algoKey, direction: 'decode', value: selectedText.text, config });
-      } catch (e) {
-        message.warning(`解密失败，将直接包裹标签: ${e.message}`);
-      }
-    }
-    
+  const doTransform = async (algoKey, config) => {
+    const tpl = TRANSFORMS[algoKey];
     const paramStr = Object.keys(config || {}).length ? Object.entries(config).map(([k, v]) => `${k}=${v}`).join(',') : '';
-    const tagAction = type === 'encrypt' ? 'enc' : 'dec';
-    const wrapped = wrapTag(`${tagAction}:${algoKey}`, resultText, paramStr);
-    
-    const { newText } = commitReplacement(value, selectedText.start, selectedText.end, wrapped);
-    const innerStart = selectedText.start + wrapped.indexOf(resultText);
+    const tagType = getAlgoTagType(algoKey);
+
+    let finalReplaceText = '';
+    let resultText = selectedText.text;
+
+    if (tagType === 'op') {
+      finalReplaceText = wrapTag(`op:${algoKey}`, resultText, paramStr);
+    } else {
+      finalReplaceText = wrapTag(`enc:${algoKey}`, resultText, paramStr);
+    }
+
+    const { newText } = commitReplacement(value, selectedText.start, selectedText.end, finalReplaceText);
+    const innerStart = selectedText.start + finalReplaceText.indexOf(resultText);
     pendingSelectRef.current = { start: innerStart, end: innerStart + resultText.length };
     
     onChange(newText);
-    message.success(`已应用${type === 'encrypt' ? '加密' : '解密'}`);
+    message.success(`已应用算法: ${tpl?.label || algoKey}`);
     setPickerOpen(false);
     setParamModal({ visible: false, action: null });
   };
@@ -288,13 +283,8 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     try {
       const values = await form.validateFields();
       const algoKey = paramModal.action.algoKey;
-      
-      if (onSaveGroupConfig) {
-        onSaveGroupConfig(algoKey, values);
-        message.success(`已记住该算法的密钥配置`);
-      }
-      
-      await doTransform(algoKey, paramModal.action.type, values);
+      if (onSaveGroupConfig) onSaveGroupConfig(algoKey, values);
+      await doTransform(algoKey, values);
     } catch {}
   };
 
@@ -330,7 +320,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
       </Flex>
 
       <Splitter style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        
         <Splitter.Panel defaultSize="50%" min="25%">
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <div style={{ padding: '4px 8px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', fontSize: 11, color: '#888', flexShrink: 0 }}>
@@ -408,10 +397,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
       <Modal title="选择算法或操作" open={pickerOpen} onCancel={() => setPickerOpen(false)} footer={null} width={700} styles={{ body: { padding: 0 } }}>
         <div style={{ display: 'flex', height: 450 }}>
           <div style={{ width: 180, borderRight: '1px solid #f0f0f0', background: '#fafafa', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ padding: 12 }}>
-              <Button type={pickerMode === 'decrypt' ? 'primary' : 'default'} block style={{ marginBottom: 8 }} onClick={() => setPickerMode('decrypt')}>⬇️ 解密 / 解码 / 运算</Button>
-              <Button type={pickerMode === 'encrypt' ? 'primary' : 'default'} block onClick={() => setPickerMode('encrypt')}>⬆️ 加密 / 编码</Button>
-            </div>
             <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
               {Object.entries(TRANSFORM_GROUPS).map(([g, label]) => {
                 if (!groupedAlgos[g]) return null;
@@ -465,20 +450,42 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
               </Space>
             </div>
           )}
-          {paramModal.action && TRANSFORMS[paramModal.action.algoKey]?.configFields?.map((f) => (
-            <Form.Item key={f.name} name={f.name} label={f.label} rules={[{ required: f.required, message: `请输入 ${f.label}` }]}>
-              {f.multiline ? (
-                <Input.TextArea 
-                  rows={paramModal.action?.algoKey === 'js-expression' ? 12 : 6} 
-                  style={{ fontFamily: 'monospace' }} 
-                  placeholder={f.placeholder || ''} // 💡 读取 placeholder
-                  spellCheck={false} // 💡 关闭拼写检查
-                />
-              ) : (
-                <Input placeholder={f.placeholder || f.defaultValue || ''} spellCheck={false} />
-              )}
-            </Form.Item>
-          ))}
+          {paramModal.action && TRANSFORMS[paramModal.action.algoKey]?.configFields?.map((f) => {
+  // 💡 布尔字段用 Switch，内部仍存 'true' / 'false'，与标签参数格式一致
+  if (f.type === 'boolean') {
+    return (
+      <Form.Item
+        key={f.name}
+        name={f.name}
+        label={f.label}
+        valuePropName="checked"
+        getValueProps={(v) => ({ checked: v === 'true' || v === true })}
+        getValueFromEvent={(checked) => (checked ? 'true' : 'false')}
+      >
+        <Switch size="small" checkedChildren="开" unCheckedChildren="关" />
+      </Form.Item>
+    );
+  }
+  return (
+    <Form.Item
+      key={f.name}
+      name={f.name}
+      label={f.label}
+      rules={[{ required: f.required, message: `请输入 ${f.label}` }]}
+    >
+      {f.multiline ? (
+        <Input.TextArea
+          rows={paramModal.action?.algoKey === 'js-expression' ? 12 : 6}
+          style={{ fontFamily: 'monospace' }}
+          placeholder={f.placeholder || ''}
+          spellCheck={false}
+        />
+      ) : (
+        <Input placeholder={f.placeholder || f.defaultValue || ''} spellCheck={false} />
+      )}
+    </Form.Item>
+  );
+})}
         </Form>
       </Modal>
 
