@@ -13,7 +13,7 @@ function parseParams(s) {
 }
 
 function findInnermost(text, actionFilter = null) {
-  const openRegex = /<@(enc|dec|script):([\w-]+)(?::([^>]+))?>/g;
+  const openRegex = /<@(enc|dec|script|var):([\w-]+)(?::([^>]+))?>/g;
   let match;
   while ((match = openRegex.exec(text)) !== null) {
     const [fullOpen, action, algoKey, params] = match;
@@ -54,8 +54,9 @@ function findInnermostExecutable(text) {
   return null;
 }
 
-// 专杀 var 标签的强力提取器
-async function extractVars(text, ctx) {
+// 提取变量并返回被剥离的干净文本（新增返回值）
+export async function extractVarsOnly(text, ctx = {}) {
+  if (!text || typeof text !== 'string') return text;
   if (!ctx.vars) ctx.vars = {};
   let cur = text;
   let guard = 0;
@@ -65,20 +66,17 @@ async function extractVars(text, ctx) {
     varRegex.lastIndex = 0;
     let match = null;
     let m;
-    // 寻找最内层（不包含 var 标签的）var 标签
     while ((m = varRegex.exec(cur)) !== null) {
-      if (!m[2].includes('<@var:')) {
-        match = m;
-        break;
-      }
+      // 找最内层的不含 var 的标签
+      if (!m[2].includes('<@var:')) { match = m; break; }
     }
     if (!match) break;
     
     const [full, name, content] = match;
-    // 提取内部内容（可能包含其他如 dec 等标签）
+    // 依赖内部所有的 dec / enc 算出一个最终值
     const innerVal = await processTags(content, ctx);
     ctx.vars[name] = innerVal;
-    // 替换掉 var 标签本身
+    // 用最终值替换掉 var 标签本身
     cur = cur.slice(0, match.index) + innerVal + cur.slice(match.index + full.length);
   }
   return cur;
@@ -120,14 +118,10 @@ export function wrapTag(tag, content, params = '') {
 export async function processTags(text, ctx = {}) {
   if (!text || typeof text !== 'string') return text;
   if (!ctx.vars) ctx.vars = {};
-  if (!ctx.responses) ctx.responses = [];
-  if (!ctx.scripts) ctx.scripts = {};
-
-  // 1. 强力提取并剥离 var
-  let cur = await extractVars(text, ctx);
-
-  // 2. 剥离 dec 和 script
+  let cur = text;
   let guard = 0;
+
+  guard = 0;
   while (guard++ < 1000) {
     const match = findInnermostExecutable(cur);
     if (!match) break;
@@ -135,7 +129,6 @@ export async function processTags(text, ctx = {}) {
     cur = cur.slice(0, match.index) + v + cur.slice(match.index + match.full.length);
   }
 
-  // 3. 执行 enc
   guard = 0;
   while (guard++ < 1000) {
     const match = findInnermost(cur, 'enc');
@@ -147,40 +140,19 @@ export async function processTags(text, ctx = {}) {
   return cur;
 }
 
-// 定时任务回写（保留 dec/var 外壳，跳过 js）
 export async function updateDecTags(text, ctx = {}) {
   if (!text || typeof text !== 'string') return text;
   if (!ctx.vars) ctx.vars = {};
-  
-  // 1. 更新 var (保留外壳)
   let cur = text;
   let guard = 0;
-  const varRegex = /<@var:([\w-]+)>([\s\S]*?)<\/@var:\1>/g;
-  
-  while (guard++ < 100) {
-    varRegex.lastIndex = 0;
-    let match = null;
-    let m;
-    while ((m = varRegex.exec(cur)) !== null) {
-      if (!m[2].includes('<@var:')) { match = m; break; }
-    }
-    if (!match) break;
-    
-    const [full, name, content] = match;
-    const innerVal = await updateDecTags(content, ctx);
-    ctx.vars[name] = innerVal;
-    const wrapped = `<@var:${name}>${innerVal}</@var:${name}>`;
-    cur = cur.slice(0, match.index) + wrapped + cur.slice(match.index + full.length);
-  }
 
-  // 2. 更新 dec 和 script
   guard = 0;
   while (guard++ < 1000) {
     const openRegex = /<@(dec|script):([\w-]+)(?::([^>]+))?>/g;
     let match;
     while ((match = openRegex.exec(cur)) !== null) {
       const [fullOpen, action, algoKey, params] = match;
-      if (algoKey === 'js-expression') continue;
+      if (algoKey === 'js-expression') continue; // JS 表达式不固化
       
       const closeTag = `</@${action}:${algoKey}>`;
       const closeIdx = cur.indexOf(closeTag, openRegex.lastIndex);
@@ -192,6 +164,12 @@ export async function updateDecTags(text, ctx = {}) {
       const v = await tryDecode({ action, algoKey, content, config: parseParams(params) }, ctx);
       const paramStr = Object.entries(parseParams(params)).map(([k, val]) => `${k}=${val}`).join(',');
       const wrapped = wrapTag(`${action}:${algoKey}`, v, paramStr);
+      
+      if (cur.slice(match.index, closeIdx + closeTag.length) === wrapped) {
+        openRegex.lastIndex = 0;
+        break;
+      }
+      
       cur = cur.slice(0, match.index) + wrapped + cur.slice(closeIdx + closeTag.length);
       openRegex.lastIndex = 0; 
       break; 

@@ -30,6 +30,7 @@ function safeLibName(fileName) {
   return fileName
 }
 
+// ==================== 本地库处理 ====================
 function registerLibHandlers() {
   ipcMain.handle('lib:open-dir', async () => {
     const dir = getLibsDir()
@@ -69,6 +70,7 @@ function registerLibHandlers() {
   })
 }
 
+// ==================== 工作区文件处理 ====================
 function registerWorkareaHandlers() {
   ipcMain.handle('workarea:set-path', async () => {
     const result = await dialog.showOpenDialog({ title: '选择绑定的工作目录', properties: ['openDirectory', 'createDirectory'] })
@@ -117,6 +119,7 @@ function registerWorkareaHandlers() {
   })
 }
 
+// ==================== 网络请求处理 ====================
 const proxySessionCache = new Map()
 async function getProxySession(proxyUrl) {
   if (!proxyUrl) return null
@@ -174,6 +177,7 @@ function registerHttpHandler() {
   })
 }
 
+// ==================== 加解密算法处理 ====================
 function aesCipherName(kind, keyLen) {
   return `aes-${keyLen * 8}-${kind}`
 }
@@ -203,7 +207,6 @@ function registerCryptoHandler() {
           compressed[0] = 0x01; compressed[1] = 0x01; compressed[2] = 0x01; compressed[4] = 0x01; compressed[5] = 0x01; compressed[6] = 0x01; compressed[7] = 0x01;
           return { ok: true, value: compressed.toString('base64') }
         }
-        // ✅ 补回 qm
         case 'qm': {
           const { secret } = options
           if (!secret) throw new Error('缺少 secret')
@@ -263,20 +266,27 @@ function registerCryptoHandler() {
   })
 }
 
-// 找到 registerScriptHandler 函数，全量替换为以下代码：
+// ==================== 脚本执行处理 ====================
 function registerScriptHandler() {
   ipcMain.handle('script:run', async (_e, { code, input, config, context }) => {
     try {
+      console.log('--- [Main] script:run 被调用 ---');
+      console.log('input:', input);
+      console.log('config:', config);
+      console.log('context:', context);
+      console.log('code:\n', code);
+
       const { createRequire } = await import('module')
       const req = createRequire(import.meta.url)
       
-      // 如果是内置 JS 表达式，直接在 Node 沙箱执行
+      // 如果是内置 JS 表达式
       if (context) {
         const crypto = (await import('crypto')).default;
         const md5Fn = (text) => crypto.createHash('md5').update(String(text)).digest('hex');
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
         const fn = new AsyncFunction('input', 'vars', 'responses', 'md5', `"use strict";\n${code}`);
         const r = await fn(input, context.vars || {}, context.responses || [], md5Fn);
+        console.log('[Main] JS 表达式计算结果:', r);
         return { ok: true, value: r == null ? '' : (typeof r === 'object' ? JSON.stringify(r) : String(r)) };
       }
 
@@ -284,25 +294,39 @@ function registerScriptHandler() {
       const mod = { exports: {} }
       const ctx = { config, input }
       const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-      const fn = new AsyncFunction('input', 'ctx', 'require', 'module', 'exports', 'USER_DATA_PATH', 'APP_PATH', 'RESOURCES_PATH', 'LIBS_PATH', code);
+      const fn = new AsyncFunction(
+        'input', 'ctx', 'require', 'module', 'exports', 
+        'USER_DATA_PATH', 'APP_PATH', 'RESOURCES_PATH', 'LIBS_PATH', code
+      );
       
       const directResult = await fn(
         input, ctx, req, mod, mod.exports, 
         app.getPath('userData'), app.getAppPath(), process.resourcesPath, getLibsDir()
       );
       
-      if (directResult !== undefined) return { ok: true, value: directResult };
+      console.log('[Main] directResult (直接 return 的结果):', directResult);
+      
+      if (directResult !== undefined) {
+        return { ok: true, value: directResult };
+      }
+      
       if (typeof mod.exports === 'function') {
         const result = await mod.exports(input, ctx);
+        console.log('[Main] module.exports 执行结果:', result);
         return { ok: true, value: result };
       }
+      
+      console.log('[Main] 无返回值，默认返回 input');
       return { ok: true, value: input };
     } catch (e) {
-      return { ok: false, error: String(e?.message || e) }
+      console.error('--- [Main] script:run 报错 ---');
+      console.error(e);
+      return { ok: false, error: String(e?.stack || e?.message || e) }
     }
   })
 }
 
+// ==================== 启动应用 ====================
 function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1200, height: 800, show: false, autoHideMenuBar: true,

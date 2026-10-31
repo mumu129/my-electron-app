@@ -1,7 +1,10 @@
 // src/renderer/src/components/HackvertorEditor.jsx
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Flex, Modal, Form, Input, Tag, Space, Typography, App, List, Button } from 'antd';
-import { TagOutlined, CodeOutlined, SafetyCertificateOutlined, SearchOutlined } from '@ant-design/icons';
+import { Flex, Modal, Form, Input, Tag, Space, Typography, App, List, Button, Splitter, Segmented } from 'antd';
+import { 
+  TagOutlined, CodeOutlined, SafetyCertificateOutlined, SearchOutlined, 
+  FullscreenOutlined, FullscreenExitOutlined, MenuFoldOutlined, MenuUnfoldOutlined 
+} from '@ant-design/icons';
 import { processTags, wrapTag } from '../utils/hackTags';
 import { TRANSFORMS, TRANSFORM_GROUPS, applyTransform } from '../utils/strictTransforms';
 import { useScripts } from '../store/scriptStore';
@@ -47,7 +50,52 @@ const commonEditorStyle = {
   boxSizing: 'border-box',
 };
 
-export default function HackvertorEditor({ value, onChange, placeholder, minRows = 6, readOnly = false }) {
+// 极简 JSON 树组件 (原生 details 标签实现折叠)
+function JsonTree({ data, isRoot = false }) {
+  if (data === null) return <span style={{ color: '#999' }}>null</span>;
+  if (typeof data === 'boolean') return <span style={{ color: '#fa8c16' }}>{String(data)}</span>;
+  if (typeof data === 'number') return <span style={{ color: '#1677ff' }}>{data}</span>;
+  if (typeof data === 'string') return <span style={{ color: '#389e0d' }}>"{data}"</span>;
+
+  if (Array.isArray(data)) {
+    if (data.length === 0) return <span>[]</span>;
+    return (
+      <details open={isRoot || data.length < 5} style={{ display: 'inline-block', width: '100%' }}>
+        <summary style={{ cursor: 'pointer', color: '#888', outline: 'none' }}>Array[{data.length}]</summary>
+        <div style={{ paddingLeft: 16, borderLeft: '1px dashed #d9d9d9', marginLeft: 4 }}>
+          {data.map((item, i) => (
+            <div key={i} style={{ margin: '4px 0' }}>
+              <span style={{ color: '#888' }}>{i}: </span>
+              <JsonTree data={item} />
+            </div>
+          ))}
+        </div>
+      </details>
+    );
+  }
+
+  if (typeof data === 'object') {
+    const keys = Object.keys(data);
+    if (keys.length === 0) return <span>{'{}'}</span>;
+    return (
+      <details open={isRoot || keys.length < 5} style={{ display: 'inline-block', width: '100%' }}>
+        <summary style={{ cursor: 'pointer', color: '#888', outline: 'none' }}>Object {'{'}...{'}'}</summary>
+        <div style={{ paddingLeft: 16, borderLeft: '1px dashed #d9d9d9', marginLeft: 4 }}>
+          {keys.map((key) => (
+            <div key={key} style={{ margin: '4px 0' }}>
+              <span style={{ color: '#722ed1', fontWeight: 500 }}>"{key}": </span>
+              <JsonTree data={data[key]} />
+            </div>
+          ))}
+        </div>
+      </details>
+    );
+  }
+
+  return <span>{String(data)}</span>;
+}
+
+export default function HackvertorEditor({ value, onChange, placeholder, readOnly = false }) {
   const { message } = App.useApp();
   const { scripts } = useScripts();
   
@@ -61,7 +109,10 @@ export default function HackvertorEditor({ value, onChange, placeholder, minRows
   const [varForm] = Form.useForm();
   
   const [renderedValue, setRenderedValue] = useState('');
+  const [renderedJson, setRenderedJson] = useState(null);
   const [isRendering, setIsRendering] = useState(false);
+  const [previewMode, setPreviewMode] = useState('text'); // 'text' | 'tree'
+  const [isFullscreen, setIsFullscreen] = useState(false); // 全屏状态
   
   const [form] = Form.useForm();
   const textareaRef = useRef(null);
@@ -74,8 +125,16 @@ export default function HackvertorEditor({ value, onChange, placeholder, minRows
     processTags(value || '', { scripts })
       .then((res) => {
         if (canceled) return;
-        try { setRenderedValue(JSON.stringify(JSON.parse(res), null, 2)); } 
-        catch { setRenderedValue(res); }
+        setRenderedValue(res);
+        try {
+          const parsed = JSON.parse(res);
+          setRenderedJson(parsed);
+          // 如果解析成功，且当前是纯文本模式（初始状态），自动切到树形展示
+          if (previewMode === 'text' && typeof parsed === 'object') setPreviewMode('tree');
+        } catch {
+          setRenderedJson(null);
+          setPreviewMode('text'); // 不是 JSON 则强制切回文本
+        }
       })
       .catch((err) => { if (!canceled) setRenderedValue(`[渲染错误: ${err.message}]`); })
       .finally(() => { if (!canceled) setIsRendering(false); });
@@ -157,11 +216,38 @@ export default function HackvertorEditor({ value, onChange, placeholder, minRows
       try {
         const scriptDef = scripts[item.key];
         if (scriptDef && scriptDef.code) {
-          const r = await window.electronAPI.script.run({ code: scriptDef.code, input: selectedText.text, config: {} });
-          if (r.ok) resultText = r.value;
-          else message.warning(`脚本报错: ${r.error}`);
+          console.log(`[Renderer] 准备执行脚本: ${item.key}`, scriptDef.code);
+          
+          const r = await window.electronAPI.script.run({ 
+            code: scriptDef.code, 
+            input: selectedText.text, 
+            config: {} 
+          });
+          
+          console.log(`[Renderer] 脚本执行返回:`, r);
+          
+          if (r.ok) {
+            // 如果脚本返回了值，就用返回值替换文本
+            if (r.value !== undefined && r.value !== null) {
+              resultText = String(r.value);
+            }
+          } else {
+            // 主进程报错了，显示报错信息
+            message.error(`脚本报错: ${r.error}`);
+            setPickerOpen(false);
+            return;
+          }
+        } else {
+          message.error('找不到该脚本的代码，请重新配置');
+          setPickerOpen(false);
+          return;
         }
-      } catch (e) { message.warning(`脚本执行失败: ${e.message}`); }
+      } catch (e) { 
+        console.error('[Renderer] 脚本执行异常:', e);
+        message.error(`脚本执行异常: ${e.message}`);
+        setPickerOpen(false);
+        return;
+      }
 
       const wrapped = wrapTag(`script:${item.key}`, resultText);
       const { newText } = commitReplacement(value, selectedText.start, selectedText.end, wrapped);
@@ -175,8 +261,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, minRows
     }
     
     const tpl = item.tpl;
-    
-    // ✅ 删除针对 js-expression 的特殊分支，走正常配置弹窗流程
     if (tpl?.configFields?.length) {
       form.resetFields();
       const defaults = {};
@@ -235,70 +319,111 @@ export default function HackvertorEditor({ value, onChange, placeholder, minRows
   const styles = `
     .hide-scrollbar::-webkit-scrollbar { display: none; }
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .json-tree-container::-webkit-scrollbar { width: 6px; height: 6px; }
+    .json-tree-container::-webkit-scrollbar-thumb { background: #d9d9d9; border-radius: 4px; }
   `;
 
-  return (
-    <Flex vertical style={{ background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden', width: '100%', height: '100%' }}>
+  const innerContent = (
+    <Flex vertical style={{ background: '#fff', border: '1px solid #d9d9d9', borderRadius: isFullscreen ? 0 : 6, overflow: 'hidden', width: '100%', height: '100%' }}>
       <style>{styles}</style>
       
+      {/* 顶部工具栏 */}
       <Flex justify="space-between" align="center" style={{ padding: '4px 8px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
         <Space size={4}>
           <TagOutlined style={{ color: '#1677ff' }} />
           <Text strong style={{ fontSize: 12 }}>Hackvertor 编辑器</Text>
           <Text type="secondary" style={{ fontSize: 11 }}>（选中文字右键选择算法）</Text>
         </Space>
-        <Space>{isRendering && <Text type="secondary" style={{ fontSize: 11 }}>计算中...</Text>}</Space>
+        <Space>
+          {isRendering && <Text type="secondary" style={{ fontSize: 11 }}>计算中...</Text>}
+          <Button 
+            size="small" 
+            type="text" 
+            icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} 
+            onClick={() => setIsFullscreen(!isFullscreen)} 
+          />
+        </Space>
       </Flex>
 
-      <div style={{ display: 'flex', flex: 1, minHeight: minRows * 22, overflow: 'hidden' }}>
+      <Splitter layout="vertical" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         
-        <div style={{ flex: 1, borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          <div style={{ padding: '4px 8px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', fontSize: 11, color: '#888', flexShrink: 0 }}>
-            <CodeOutlined /> 报文编辑（明文，可继续修改加标签）
+        {/* 上方：编辑区 */}
+        <Splitter.Panel defaultSize="50%" min="20%">
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            <div style={{ padding: '4px 8px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', fontSize: 11, color: '#888', flexShrink: 0 }}>
+              <CodeOutlined /> 报文编辑（明文，可继续修改加标签）
+            </div>
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+              <pre
+                ref={preRef}
+                aria-hidden="true"
+                dangerouslySetInnerHTML={{ __html: highlightText(value || '') + '\n\n\n\n' }}
+                style={{
+                  ...commonEditorStyle,
+                  position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                  color: '#333', background: 'transparent', pointerEvents: 'none',
+                  overflow: 'hidden'
+                }}
+              />
+              <textarea
+                ref={textareaRef}
+                value={value || ''}
+                onChange={(e) => onChange(e.target.value)}
+                onContextMenu={handleContextMenu}
+                onScroll={handleScroll}
+                readOnly={readOnly}
+                spellCheck="false"
+                className="hide-scrollbar"
+                style={{
+                  ...commonEditorStyle,
+                  position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                  width: '100%', height: '100%',
+                  color: 'transparent', caretColor: '#000', background: 'transparent', 
+                  resize: 'none', overflow: 'auto'
+                }}
+                placeholder={placeholder}
+              />
+            </div>
           </div>
-          <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-            <pre
-              ref={preRef}
-              aria-hidden="true"
-              dangerouslySetInnerHTML={{ __html: highlightText(value || '') + '\n\n\n\n' }}
-              style={{
-                ...commonEditorStyle,
-                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-                color: '#333', background: 'transparent', pointerEvents: 'none',
-                overflow: 'hidden'
-              }}
-            />
-            <textarea
-              ref={textareaRef}
-              value={value || ''}
-              onChange={(e) => onChange(e.target.value)}
-              onContextMenu={handleContextMenu}
-              onScroll={handleScroll}
-              readOnly={readOnly}
-              spellCheck="false"
-              className="hide-scrollbar"
-              style={{
-                ...commonEditorStyle,
-                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-                width: '100%', height: '100%',
-                color: 'transparent', caretColor: '#000', background: 'transparent', 
-                resize: 'none', overflow: 'auto'
-              }}
-              placeholder={placeholder}
-            />
-          </div>
-        </div>
+        </Splitter.Panel>
 
-        <div style={{ flex: 1, background: '#f6ffed', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          <div style={{ padding: '4px 8px', background: '#d9f7be', borderBottom: '1px solid #b7eb8f', fontSize: 11, color: '#389e0d', display: 'flex', justifyContent: 'space-between', flexShrink: 0 }}>
-            <Space size={4}><SafetyCertificateOutlined /><span>最终发送报文（已执行所有加密）</span></Space>
+        {/* 下方：预览区 (带视图切换) */}
+        <Splitter.Panel>
+          <div style={{ height: '100%', background: '#f6ffed', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            <Flex justify="space-between" align="center" style={{ padding: '4px 8px', background: '#d9f7be', borderBottom: '1px solid #b7eb8f', fontSize: 11, color: '#389e0d', flexShrink: 0 }}>
+              <Space size={4}>
+                <SafetyCertificateOutlined />
+                <span>最终发送报文（已执行所有加密）</span>
+              </Space>
+              {renderedJson !== null && (
+                <Segmented 
+                  size="small" 
+                  options={[
+                    { label: '文本', value: 'text', icon: <MenuUnfoldOutlined /> }, 
+                    { label: '树形', value: 'tree', icon: <MenuFoldOutlined /> }
+                  ]} 
+                  value={previewMode} 
+                  onChange={setPreviewMode} 
+                />
+              )}
+            </Flex>
+            
+            <div className="json-tree-container" style={{ flex: 1, overflow: 'auto', padding: 12 }}>
+              {previewMode === 'tree' && renderedJson !== null ? (
+                <div style={{ fontSize: 13, fontFamily: 'Consolas, Monaco, monospace' }}>
+                  <JsonTree data={renderedJson} isRoot />
+                </div>
+              ) : (
+                <pre style={{ margin: 0, fontFamily: 'Consolas, Monaco, monospace', fontSize: 13, lineHeight: '1.6', whiteSpace: 'pre-wrap', wordWrap: 'break-word', color: '#237804' }}>
+                  {renderedValue || '（空）'}
+                </pre>
+              )}
+            </div>
           </div>
-          <pre style={{ flex: 1, margin: 0, padding: 12, fontFamily: 'Consolas, Monaco, monospace', fontSize: 13, lineHeight: '1.6', whiteSpace: 'pre-wrap', wordWrap: 'break-word', overflow: 'auto', color: '#237804' }}>
-            {renderedValue || '（空）'}
-          </pre>
-        </div>
-      </div>
+        </Splitter.Panel>
+      </Splitter>
 
+      {/* 算法选择器弹窗 */}
       <Modal title="选择算法或操作" open={pickerOpen} onCancel={() => setPickerOpen(false)} footer={null} width={700} styles={{ body: { padding: 0 } }}>
         <div style={{ display: 'flex', height: 450 }}>
           <div style={{ width: 180, borderRight: '1px solid #f0f0f0', background: '#fafafa', display: 'flex', flexDirection: 'column' }}>
@@ -334,6 +459,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, minRows
         </div>
       </Modal>
 
+      {/* 参数配置弹窗 */}
       <Modal title={<span>配置参数：<Tag color="blue">{TRANSFORMS[paramModal.action?.algoKey]?.label}</Tag></span>} open={paramModal.visible} onOk={handleModalOk} onCancel={() => setParamModal({ visible: false, action: null })} okText="应用并计算" destroyOnHidden>
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           {paramModal.action && TRANSFORMS[paramModal.action.algoKey]?.configFields?.map((f) => (
@@ -344,6 +470,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, minRows
         </Form>
       </Modal>
 
+      {/* 提取变量弹窗 */}
       <Modal title="提取为变量" open={varModal.visible} onOk={handleVarOk} onCancel={() => setVarModal({ visible: false })} okText="提取">
         <Form form={varForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="name" label="变量名（供 JS 表达式调用）" rules={[{ required: true, pattern: /^[a-zA-Z0-9_]+$/, message: '只能包含字母数字下划线' }]}>
@@ -353,4 +480,15 @@ export default function HackvertorEditor({ value, onChange, placeholder, minRows
       </Modal>
     </Flex>
   );
+
+  // 如果全屏，用固定定位包裹
+  if (isFullscreen) {
+    return (
+      <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: 9999, background: '#fff' }}>
+        {innerContent}
+      </div>
+    );
+  }
+
+  return innerContent;
 }

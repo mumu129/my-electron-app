@@ -15,7 +15,7 @@ import RequestWorkbench from '../components/RequestWorkbench';
 import AlgorithmConfigPanel from '../components/AlgorithmConfigPanel';
 import WorkareaToolbar from '../components/WorkareaToolbar';
 import usePersistentState from '../hooks/usePersistentState';
-import { processTags, updateDecTags } from '../utils/hackTags';
+import { processTags, updateDecTags, extractVarsOnly } from '../utils/hackTags';
 
 const { Text } = Typography;
 
@@ -105,33 +105,56 @@ export default function ProjectDetailPage({ projectId, onBack }) {
 
           try {
             let rawUrl = req.url || '';
-            let newUrlTemplate = await updateDecTags(rawUrl, groupCtx);
-            if (newUrlTemplate !== rawUrl) { req.url = newUrlTemplate; updates.push({ fieldPath: 'request.url', value: newUrlTemplate }); }
-            let finalUrl = await processTags(newUrlTemplate, groupCtx);
+            let rawBody = req.postData?.text;
+            let rawHeaders = req.headers || [];
 
-            let finalHeaders = {};
-            if (Array.isArray(req.headers)) {
-              for (let hidx = 0; hidx < req.headers.length; hidx++) {
-                const h = req.headers[hidx];
-                if (h.name && !['host', 'content-length', 'connection'].includes(h.name.toLowerCase())) {
-                  let rawHVal = h.value || '';
-                  let newHValTemplate = await updateDecTags(rawHVal, groupCtx);
-                  if (newHValTemplate !== rawHVal) { h.value = newHValTemplate; updates.push({ fieldPath: `request.headers.${hidx}.value`, value: newHValTemplate }); }
-                  finalHeaders[h.name] = await processTags(newHValTemplate, groupCtx);
-                }
+            // ==========================================
+            // 阶段 1：更新模板状态 (把时间戳、+1等固化到模板)
+            // ==========================================
+            if (rawBody) {
+              const newBody = await updateDecTags(rawBody, groupCtx);
+              if (newBody !== rawBody) { req.postData.text = newBody; rawBody = newBody; updates.push({ fieldPath: 'request.postData.text', value: newBody }); }
+            }
+            const newUrl = await updateDecTags(rawUrl, groupCtx);
+            if (newUrl !== rawUrl) { req.url = newUrl; rawUrl = newUrl; updates.push({ fieldPath: 'request.url', value: newUrl }); }
+            
+            for (let hidx = 0; hidx < rawHeaders.length; hidx++) {
+              const h = rawHeaders[hidx];
+              if (h.value) {
+                const newHVal = await updateDecTags(h.value, groupCtx);
+                if (newHVal !== h.value) { h.value = newHVal; rawHeaders[hidx] = h; updates.push({ fieldPath: `request.headers.${hidx}.value`, value: newHVal }); }
               }
             }
+
+            // ==========================================
+          
+            // ==========================================
+            // 阶段 2：基于最新模板，全局预提取变量
+            // ==========================================
+            rawUrl = await extractVarsOnly(rawUrl, groupCtx);
+            if (rawBody) rawBody = await extractVarsOnly(rawBody, groupCtx);
+            for (let hidx = 0; hidx < rawHeaders.length; hidx++) {
+              if (rawHeaders[hidx].value) {
+                rawHeaders[hidx].value = await extractVarsOnly(rawHeaders[hidx].value, groupCtx);
+              }
+            }
+            // ==========================================
+            // 阶段 3：生成最终发送的报文
+            // ==========================================
+            let finalUrl = await processTags(rawUrl, groupCtx);
+            let finalBody = rawBody ? await processTags(rawBody, groupCtx) : undefined;
             
+            let finalHeaders = {};
+            for (const h of rawHeaders) {
+              if (h.name && !['host', 'content-length', 'connection'].includes(h.name.toLowerCase())) {
+                finalHeaders[h.name] = await processTags(h.value || '', groupCtx);
+              }
+            }
+
+            // 拼接 Cookie
             const hasCookieHeader = Object.keys(finalHeaders).some(k => k.toLowerCase() === 'cookie');
             if (!hasCookieHeader && Array.isArray(req.cookies) && req.cookies.length > 0) {
               finalHeaders['Cookie'] = req.cookies.map(c => `${c.name}=${c.value}`).join('; ');
-            }
-
-            let finalBody = req.postData?.text;
-            if (finalBody) {
-              let newBodyTemplate = await updateDecTags(finalBody, groupCtx);
-              if (newBodyTemplate !== finalBody) { req.postData.text = newBodyTemplate; updates.push({ fieldPath: 'request.postData.text', value: newBodyTemplate }); }
-              finalBody = await processTags(newBodyTemplate, groupCtx);
             }
 
             if (updates.length > 0) {
@@ -139,6 +162,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
               currentReqs[i] = { ...entry, request: req };
             }
 
+            // 发送请求
             const res = await window.electronAPI.httpRequest({
               url: finalUrl, method, headers: finalHeaders, body: finalBody, proxy: projectProxy || undefined
             });
@@ -154,7 +178,6 @@ export default function ProjectDetailPage({ projectId, onBack }) {
             setExecLogs(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: req.url, method, status: 'ERR', statusText: e.message, body: '', timeCost: 0 }, ...prev]);
           }
 
-          // 👇 核心修复：强制让出主线程 50ms，防止 UI 冻结卡死，让用户能点停止
           await new Promise(r => setTimeout(r, 50));
         }
         
