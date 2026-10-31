@@ -20,7 +20,6 @@ function commitReplacement(value, start, end, replacement) {
 function highlightText(text) {
   if (!text) return '';
   const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  // 支持高亮 var, dec, enc, script, env
   return escaped.replace(/&lt;@(.*?)&gt;|&lt;\/@(.*?)&gt;/g, (match, open, close) => {
     let color = '#d4b106';
     if (open) {
@@ -53,7 +52,6 @@ const commonEditorStyle = {
   boxSizing: 'border-box',
 };
 
-// 手写极简 JSON 树组件
 function JsonTree({ data, isRoot = false }) {
   if (data === null) return <span style={{ color: '#999' }}>null</span>;
   if (typeof data === 'boolean') return <span style={{ color: '#fa8c16' }}>{String(data)}</span>;
@@ -174,7 +172,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     const kw = searchText.toLowerCase();
     const isEnc = pickerMode === 'encrypt';
     
-    // 1. 内置算法
     let builtin = Object.entries(TRANSFORMS).filter(([k, v]) => {
       const validDir = v.direction === 'both' || (isEnc ? v.direction === 'encode-only' : v.direction === 'decode-only');
       if (!validDir) return false;
@@ -182,19 +179,17 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
       return label.toLowerCase().includes(kw) || k.toLowerCase().includes(kw);
     }).map(([k, v]) => ({ key: k, type: 'builtin', label: isEnc ? (v.encodeLabel || v.label) : (v.decodeLabel || v.label), group: v.group || 'other', tpl: v }));
 
-    // 2. 提取为变量 (仅在解密/运算模式下显示)
     if (!isEnc && ('提取为变量'.includes(kw) || 'var'.includes(kw))) {
       builtin.unshift({
         key: '__extract_var__', type: 'var', label: '📦 提取为变量 (供 JS 调用)', group: 'app', tpl: null
       });
     }
 
-    // 3. 主进程自定义脚本 (加密和解密模式都显示)
     let customScripts = Object.entries(scripts || {})
       .filter(([k, v]) => (v.label || k).toLowerCase().includes(kw) || k.toLowerCase().includes(kw))
       .map(([k, v]) => ({ 
         key: k, 
-        type: isEnc ? 'script-enc' : 'script', // 区分加解密类型
+        type: isEnc ? 'script-enc' : 'script', 
         label: (isEnc ? '⚙️ ' : '⚙️ ') + (v.label || k), 
         group: 'script', 
         tpl: v 
@@ -230,7 +225,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
         }
       } catch (e) { message.warning(`脚本执行失败: ${e.message}`); }
 
-      // 如果是 enc 模式，用 enc:script-名字
       const tagName = item.type === 'script-enc' ? `enc:script-${item.key}` : `script:${item.key}`;
       const wrapped = wrapTag(tagName, resultText);
       
@@ -297,7 +291,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
       
       if (onSaveGroupConfig) {
         onSaveGroupConfig(algoKey, values);
-        message.success(`已记住该算法的密钥配置，下次无需重复输入`);
+        message.success(`已记住该算法的密钥配置`);
       }
       
       await doTransform(algoKey, paramModal.action.type, values);
@@ -402,7 +396,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
                   <JsonTree data={renderedJson} isRoot />
                 </div>
               ) : (
-                <pre style={{ margin: 0, fontFamily: 'Consolas, Monaco, monospace', fontSize: 13, lineHeight: '1.6', whiteSpace: 'pre-wrap', wordWrap: 'break-word', color: '#237804' }}>
+                <pre style={{ margin: 0, fontFamily: 'Consolas, Monaco, monospace', fontSize: 13, lineHeight: '1.6', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#237804' }}>
                   {renderedValue || '（空）'}
                 </pre>
               )}
@@ -473,7 +467,16 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
           )}
           {paramModal.action && TRANSFORMS[paramModal.action.algoKey]?.configFields?.map((f) => (
             <Form.Item key={f.name} name={f.name} label={f.label} rules={[{ required: f.required, message: `请输入 ${f.label}` }]}>
-              {f.multiline ? <Input.TextArea rows={paramModal.action?.algoKey === 'js-expression' ? 12 : 6} style={{ fontFamily: 'monospace' }} /> : <Input placeholder={f.defaultValue || ''} />}
+              {f.multiline ? (
+                <Input.TextArea 
+                  rows={paramModal.action?.algoKey === 'js-expression' ? 12 : 6} 
+                  style={{ fontFamily: 'monospace' }} 
+                  placeholder={f.placeholder || ''} // 💡 读取 placeholder
+                  spellCheck={false} // 💡 关闭拼写检查
+                />
+              ) : (
+                <Input placeholder={f.placeholder || f.defaultValue || ''} spellCheck={false} />
+              )}
             </Form.Item>
           ))}
         </Form>

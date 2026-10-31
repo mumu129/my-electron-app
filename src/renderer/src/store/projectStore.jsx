@@ -34,9 +34,10 @@ export function ProjectProvider({ children }) {
   const renameProject = (projectId, newName) => setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, name: newName } : p)));
 
   const createGroup = (projectId, name) => {
-    // 初始化主组时，直接附带副组结构
     const g = { 
-      id: uid(), name, requests: [], configs: {}, proxy: '', 
+      id: uid(), name, requests: [], 
+      configs: { main: {}, sub: {} }, // 💡 初始化分别存放的主组和副组密钥
+      proxy: '', 
       subGroup: { 
         requests: [], 
         zones: [], 
@@ -59,8 +60,46 @@ export function ProjectProvider({ children }) {
     setProjects((prev) => prev.map((p) => p.id !== projectId ? p : { ...p, groups: p.groups.map((g) => g.id === groupId ? { ...g, proxy } : g) }));
   };
 
-  const updateGroupConfig = (projectId, groupId, algoKey, config) => {
-    setProjects((prev) => prev.map((p) => p.id !== projectId ? p : { ...p, groups: p.groups.map((g) => g.id !== groupId ? g : { ...g, configs: { ...(g.configs || {}), [algoKey]: config } }) }));
+  // 💡 更新配置：带 level 区分（main/sub）
+  const updateGroupConfig = (projectId, groupId, level, algoKey, config) => {
+    setProjects((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p;
+      return {
+        ...p,
+        groups: p.groups.map((g) => {
+          if (g.id !== groupId) return g;
+          const currentConfigs = g.configs || {};
+          const levelConfigs = currentConfigs[level] || {};
+          return {
+            ...g,
+            configs: {
+              ...currentConfigs,
+              [level]: { ...levelConfigs, [algoKey]: config }
+            }
+          };
+        })
+      };
+    }));
+  };
+
+  // 删除配置
+  const removeGroupConfig = (projectId, groupId, level, algoKey) => {
+    setProjects((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p;
+      return {
+        ...p,
+        groups: p.groups.map((g) => {
+          if (g.id !== groupId) return g;
+          const currentConfigs = g.configs || {};
+          const levelConfigs = { ...(currentConfigs[level] || {}) };
+          delete levelConfigs[algoKey];
+          return {
+            ...g,
+            configs: { ...currentConfigs, [level]: levelConfigs }
+          };
+        })
+      };
+    }));
   };
 
   const updateSubGroup = (projectId, groupId, subGroupData) => {
@@ -78,7 +117,6 @@ export function ProjectProvider({ children }) {
 
   const deleteGroup = (projectId, groupId) => setProjects((prev) => prev.map((p) => p.id === projectId ? { ...p, groups: p.groups.filter((g) => g.id !== groupId) } : p));
 
-  // 💡 修复：补回主组添加请求的方法
   const addRequestsToGroup = (projectId, groupId, requests) => {
     setProjects((prev) => prev.map((p) => {
       if (p.id !== projectId) return p;
@@ -101,7 +139,6 @@ export function ProjectProvider({ children }) {
     }));
   };
 
-  // 添加请求到副组
   const addRequestsToSubGroup = (projectId, groupId, requests) => {
     setProjects((prev) => prev.map((p) => {
       if (p.id !== projectId) return p;
@@ -259,7 +296,7 @@ export function ProjectProvider({ children }) {
       addRequestsToGroup, addRequestsToSubGroup, 
       updateGroupRequests, updateSubGroupRequests, reorderGroupRequests,
       updateRequestFields, applyResponse, resetGroupRequests, resetSelectedRequests,
-      updateGroupConfig, updateSubGroup
+      updateGroupConfig, removeGroupConfig, updateSubGroup
     }}>
       {children}
     </ProjectContext.Provider>

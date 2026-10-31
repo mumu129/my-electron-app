@@ -1,14 +1,14 @@
+// src/renderer/src/pages/GlobalAlgorithmPage.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Card, Col, Row, Typography, Tag, Input, Button, Form, App as AntApp,
-  Popover, Divider, Flex, Empty, Modal, Space, Alert, Popconfirm,
+  Popover, Divider, Flex, Empty, Modal, Space, Alert, Popconfirm, Dropdown
 } from 'antd';
 import {
   SettingOutlined, CheckOutlined, DeleteOutlined, PlusOutlined,
   EditOutlined, FolderOpenOutlined, ImportOutlined, ReloadOutlined,
-  FileTextOutlined,
+  FileTextOutlined, CodeOutlined, FolderAddOutlined, ThunderboltOutlined
 } from '@ant-design/icons';
-// 替换为新的严格算法库
 import { TRANSFORMS, TRANSFORM_GROUPS } from '../utils/strictTransforms';
 import { useAlgorithms } from '../store/algorithmStore';
 import { useScripts } from '../store/scriptStore';
@@ -16,22 +16,48 @@ import { useScripts } from '../store/scriptStore';
 const { Text } = Typography;
 const { TextArea } = Input;
 
-const SCRIPT_TEMPLATE = `// 外部脚本，运行在 Electron 主进程
-// 可用变量：
-//   input / ctx.config / ctx.responses / ctx.currentStep
-//   require
-//   USER_DATA_PATH / APP_PATH / RESOURCES_PATH / LIBS_PATH
-//
-// 主进程里没有 __dirname，require 本地文件请用绝对路径：
-//   const path = require('path');
-//   const lib = require(path.join(LIBS_PATH, 'xxsdk3.2.min.js'));
-//
-// 必须 return 一个值。
+// 💡 内置详细的 Context 提示文档
+const SCRIPT_PLACEHOLDER = `// ==========================================
+// 外部脚本（在 Electron 主进程 Node.js 环境中运行）
+// ==========================================
 
-module.exports = function(input, ctx) {
-  return input;
-};
-`;
+// 【1. 环境变量与模块】
+// require: 可以直接 require 第三方模块或本地文件。
+// const path = require('path');
+// const crypto = require('crypto');
+
+// LIBS_PATH: 本地库目录（存放你导入的 .js 文件）
+// USER_DATA_PATH: 应用用户数据目录
+// APP_PATH / RESOURCES_PATH: 应用资源目录
+
+// 【2. 函数签名】
+// module.exports = function(input, ctx) { ... }
+
+// 【3. 参数详解】
+// input: string
+//   - 当前标签包裹的原始文本，即 <@script:名> 中间的内容。
+//
+// ctx: object (上下文环境)
+//   - ctx.config: object
+//     当前标签上传入的参数。例如标签是 <@script:name:key=123,iv=456>，
+//     那么 ctx.config = { key: '123', iv: '456' }。
+//
+//   - ctx.responses: array
+//     如果是在请求组中执行，可获取前面请求的响应。
+//     格式: [ { index: 0, response: { status: 200, body: '...' } } ]
+//
+//   - ctx.currentStep: number
+//     当前执行到请求组中的第几个请求（索引）。
+
+// 【4. 必须返回结果】
+// 可以返回字符串、数字、对象（引擎会自动转 JSON）。
+//
+// 示例：
+// const lib = require(path.join(LIBS_PATH, 'xxsdk.js'));
+// module.exports = function(input, ctx) {
+//   const key = ctx.config.key || 'default';
+//   return lib.encrypt(input, key);
+// };`;
 
 /* ============ 本地库面板 ============ */
 function LocalLibsCard() {
@@ -167,7 +193,14 @@ function ScriptEditorModal({ open, editName, onClose }) {
   const { message } = AntApp.useApp();
   const [form] = Form.useForm();
   const [configFields, setConfigFields] = useState([]);
+  const [libs, setLibs] = useState([]);
   const isEdit = !!editName;
+
+  useEffect(() => {
+    if (open && window.electronAPI?.lib) {
+      window.electronAPI.lib.list().then(r => { if (r.ok) setLibs(r.libs || []); });
+    }
+  }, [open]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -177,11 +210,11 @@ function ScriptEditorModal({ open, editName, onClose }) {
         name: editName,
         label: def.label || editName,
         description: def.description || '',
-        code: def.code || SCRIPT_TEMPLATE,
+        code: def.code || '', 
       });
       setConfigFields(def.configFields || []);
     } else {
-      form.setFieldsValue({ name: '', label: '', description: '', code: SCRIPT_TEMPLATE });
+      form.setFieldsValue({ name: '', label: '', description: '', code: '' }); 
       setConfigFields([]);
     }
   }, [open, editName, scripts, form, isEdit]);
@@ -205,11 +238,40 @@ function ScriptEditorModal({ open, editName, onClose }) {
         required: f.required !== false,
         defaultValue: f.defaultValue || '',
       }));
-    const payload = { label: v.label || name, description: v.description || '', code: v.code, configFields: cleanedFields };
+    const payload = { label: v.label || name, description: v.description || '', code: v.code || '', configFields: cleanedFields };
     if (isEdit) { updateScript(editName, payload); message.success('已保存'); }
     else { createScript(name, payload); message.success('已创建'); }
     onClose();
   };
+
+  const insertCode = (snippet) => {
+    const currentCode = form.getFieldValue('code') || '';
+    form.setFieldsValue({ code: currentCode + '\n' + snippet });
+  };
+
+  const insertMenuItems = [
+    {
+      key: 'env',
+      label: '插入环境路径',
+      icon: <FolderAddOutlined />,
+      children: [
+        { key: 'path', label: 'const path = require("path");', onClick: () => insertCode('const path = require("path");') },
+        { key: 'libs', label: 'LIBS_PATH', onClick: () => insertCode('const libsPath = LIBS_PATH;') },
+        { key: 'user', label: 'USER_DATA_PATH', onClick: () => insertCode('const dataPath = USER_DATA_PATH;') },
+      ]
+    },
+    {
+      key: 'libs',
+      label: '引入本地库 (require)',
+      icon: <CodeOutlined />,
+      disabled: libs.length === 0,
+      children: libs.map(l => ({
+        key: l.fileName,
+        label: l.fileName,
+        onClick: () => insertCode(`const lib_${l.fileName.split('.')[0]} = require(path.join(LIBS_PATH, '${l.fileName}'));`)
+      }))
+    }
+  ];
 
   return (
     <Modal open={open} onCancel={onClose} onOk={handleOk} width={900}
@@ -246,8 +308,19 @@ function ScriptEditorModal({ open, editName, onClose }) {
           ))}
           <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={addField}>添加配置字段</Button>
         </Flex>
-        <Form.Item name="code" label="脚本代码" rules={[{ required: true }]}>
-          <TextArea rows={18} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+        <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
+          <Text strong>脚本代码</Text>
+          <Dropdown menu={{ items: insertMenuItems }}>
+            <Button size="small" type="dashed" icon={<ThunderboltOutlined />}>快捷插入代码</Button>
+          </Dropdown>
+        </Flex>
+        <Form.Item name="code" rules={[{ required: true, message: '请输入脚本代码' }]}>
+          <TextArea 
+            rows={18} 
+            style={{ fontFamily: 'monospace', fontSize: 13 }} 
+            placeholder={SCRIPT_PLACEHOLDER} // 💡 换成详细提示
+            spellCheck={false} 
+          />
         </Form.Item>
       </Form>
       <Alert type="info" showIcon
@@ -260,7 +333,7 @@ export default function GlobalAlgorithmPage() {
   const { algorithms } = useAlgorithms();
   const { scripts, removeScript } = useScripts();
   const { message } = AntApp.useApp();
-  const [activeGroup, setActiveGroup] = useState('encoding'); // 默认切到编码组
+  const [activeGroup, setActiveGroup] = useState('encoding');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingName, setEditingName] = useState(null);
 
@@ -272,7 +345,6 @@ export default function GlobalAlgorithmPage() {
     return result;
   }, []);
 
-  // 去除 chain 组的展示（因为 chain 依赖上下文）
   const groups = Object.entries(TRANSFORM_GROUPS).filter(([k]) => k !== 'chain');
   const scriptList = Object.entries(scripts || {});
 
