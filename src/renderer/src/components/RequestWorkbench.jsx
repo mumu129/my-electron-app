@@ -2,9 +2,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Splitter, Flex, Input, Select, Segmented, Typography, Tag,
-  Button, Empty, App, Checkbox, Popconfirm,
+  Button, Empty, App, Checkbox, Popconfirm, Space, Tooltip
 } from 'antd';
-import { SearchOutlined, DeleteOutlined } from '@ant-design/icons';
+import { SearchOutlined, DeleteOutlined, FilterOutlined } from '@ant-design/icons';
 import RequestDetail from './RequestDetail';
 import { formatTime, statusColor, parseUrlParts, genUid } from '../utils/har';
 
@@ -25,6 +25,12 @@ export default function RequestWorkbench({
   const [keyword, setKeyword] = useState('');
   const [method, setMethod] = useState('ALL');
   const [statusRange, setStatusRange] = useState('ALL');
+  
+  // 多维筛选状态
+  const [filterHost, setFilterHost] = useState('ALL');
+  const [filterMime, setFilterMime] = useState('ALL');
+  const [excludeKeyword, setExcludeKeyword] = useState('');
+
   const [currentUid, setCurrentUid] = useState(null);
   const [selectedUids, setSelectedUids] = useState(() => new Set());
   const [activeTabKey, setActiveTabKey] = useState('request');
@@ -43,23 +49,59 @@ export default function RequestWorkbench({
     return { responses, currentStep };
   }, [entries, currentUid]);
 
+  // 提取所有域名和 Mime 用于筛选
+  const hosts = useMemo(() => {
+    const set = new Set();
+    entries.forEach(e => {
+      const parts = parseUrlParts(e.request?.url);
+      if (parts.host) set.add(parts.host);
+    });
+    return [{ value: 'ALL', label: '全部域名' }, ...Array.from(set).map(h => ({ value: h, label: h }))];
+  }, [entries]);
+
+  const mimes = useMemo(() => {
+    const set = new Set();
+    entries.forEach(e => {
+      const mime = e.response?.content?.mimeType || 'unknown';
+      if (mime) set.add(mime);
+    });
+    return [{ value: 'ALL', label: '全部类型' }, ...Array.from(set).map(m => ({ value: m, label: m }))];
+  }, [entries]);
+
   const methods = useMemo(() => {
     const set = new Set(entries.map((e) => e.request?.method).filter(Boolean));
     return [{ value: 'ALL', label: '全部方法' }].concat([...set].map((m) => ({ value: m, label: m })));
   }, [entries]);
 
+  // 核心过滤逻辑
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
+    const exKw = excludeKeyword.trim().toLowerCase();
     const rangeFn = STATUS_RANGE[statusRange] || STATUS_RANGE.ALL;
+    
     return entries.filter((e) => {
       const m = e.request?.method;
       const s = e.response?.status || 0;
+      const parts = parseUrlParts(e.request?.url);
+      const mime = e.response?.content?.mimeType || 'unknown';
+
       if (method !== 'ALL' && m !== method) return false;
+      if (filterHost !== 'ALL' && parts.host !== filterHost) return false;
+      if (filterMime !== 'ALL' && mime !== filterMime) return false;
       if (!rangeFn(s)) return false;
-      if (!kw) return true;
-      return (e.request?.url || '').toLowerCase().includes(kw) || m?.toLowerCase().includes(kw);
+      
+      // 包含关键字
+      if (kw && !((e.request?.url || '').toLowerCase().includes(kw) || m?.toLowerCase().includes(kw))) return false;
+      
+      // 排除关键字 (URL或Body)
+      if (exKw) {
+        const bodyStr = (e.response?.content?.text || '').toLowerCase();
+        if ((e.request?.url || '').toLowerCase().includes(exKw) || bodyStr.includes(exKw)) return false;
+      }
+
+      return true;
     });
-  }, [entries, keyword, method, statusRange]);
+  }, [entries, keyword, method, statusRange, filterHost, filterMime, excludeKeyword]);
 
   const allChecked = filtered.length > 0 && filtered.every((e) => selectedUids.has(e._uid));
   const someChecked = filtered.some((e) => selectedUids.has(e._uid));
@@ -137,22 +179,29 @@ export default function RequestWorkbench({
               <>
                 <Flex gap={8}>
                   <Input allowClear size="small" prefix={<SearchOutlined />} placeholder="搜索 URL..." value={keyword} onChange={(e) => setKeyword(e.target.value)} style={{ flex: 1 }} />
+                  <Input allowClear size="small" placeholder="排除关键字" value={excludeKeyword} onChange={(e) => setExcludeKeyword(e.target.value)} style={{ width: 120, borderColor: excludeKeyword ? '#ff4d4f' : '' }} />
+                </Flex>
+                <Flex gap={8}>
+                  <Select size="small" value={filterHost} onChange={setFilterHost} options={hosts} style={{ flex: 1 }} />
+                  <Select size="small" value={filterMime} onChange={setFilterMime} options={mimes} style={{ flex: 1 }} />
+                </Flex>
+                <Flex gap={8}>
                   <Select size="small" value={method} onChange={setMethod} options={methods} style={{ width: 100 }} />
+                  <Segmented size="small" value={statusRange} onChange={setStatusRange} options={[{ value: 'ALL', label: '全部' }, { value: '2xx', label: '2xx' }, { value: '3xx', label: '3xx' }, { value: '4xx', label: '4xx' }, { value: '5xx', label: '5xx' }]} />
                 </Flex>
                 <Flex justify="space-between" align="center">
-                  <Segmented size="small" value={statusRange} onChange={setStatusRange} options={[{ value: 'ALL', label: '全部' }, { value: '2xx', label: '2xx' }, { value: '3xx', label: '3xx' }, { value: '4xx', label: '4xx' }, { value: '5xx', label: '5xx' }]} />
-                  <Text type="secondary" style={{ fontSize: 12 }}>{filtered.length} 条</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>共 {filtered.length} 条</Text>
+                  {showSelection && (
+                    <Flex gap={8} align="center">
+                      <Checkbox checked={allChecked} indeterminate={someChecked && !allChecked} onChange={toggleSelectAll}>
+                        <Text style={{ fontSize: 12 }}>已选 {selectedUids.size}</Text>
+                      </Checkbox>
+                      {showAddToProject && (
+                        <Button size="small" type="primary" disabled={selectedUids.size === 0} onClick={handleAddClick}>添加到项目</Button>
+                      )}
+                    </Flex>
+                  )}
                 </Flex>
-                {showSelection && (
-                  <Flex justify="space-between" align="center">
-                    <Checkbox checked={allChecked} indeterminate={someChecked && !allChecked} onChange={toggleSelectAll}>
-                      <Text style={{ fontSize: 12 }}>已选 {selectedUids.size}</Text>
-                    </Checkbox>
-                    {showAddToProject && (
-                      <Button size="small" type="primary" disabled={selectedUids.size === 0} onClick={handleAddClick}>添加到项目</Button>
-                    )}
-                  </Flex>
-                )}
               </>
             )}
           </Flex>

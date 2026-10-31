@@ -44,7 +44,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const [intervalSec, setIntervalSec] = useState(0);
   const [concurrency, setConcurrency] = useState(1);
   const [stopOnError, setStopOnError] = useState(false);
-  const [assertString, setAssertString] = useState('');
+  const [stopKeyword, setStopKeyword] = useState(''); // 修复断言逻辑
   
   // 执行状态
   const [isRunning, setIsRunning] = useState(false);
@@ -179,10 +179,14 @@ export default function ProjectDetailPage({ projectId, onBack }) {
           const isSuccess = res.status >= 200 && res.status < 400;
           if (isSuccess) totalSuccess++; else totalFailed++;
 
+          // 修复断言逻辑：包含关键字则停止
           if (stopOnError) {
-            if (res.status >= 400 || (assertString && !res.body.includes(assertString))) {
+            if (res.status >= 400) {
               stopFlagRef.current = true;
-              message.error(`执行中断：断言失败 (状态码 ${res.status})`);
+              message.error(`执行中断：状态码异常 (${res.status})`);
+            } else if (stopKeyword && res.body.includes(stopKeyword)) {
+              stopFlagRef.current = true;
+              message.error(`执行中断：响应中包含关键字「${stopKeyword}」`);
             }
           }
 
@@ -310,13 +314,12 @@ export default function ProjectDetailPage({ projectId, onBack }) {
               <InputNumber min={1} max={50} value={concurrency} onChange={setConcurrency} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {/* 修复了 >= 引起的 JSX 语法报错 */}
-              <span>失败自动停止（状态码 &gt;= 400）：</span>
+              <span>状态码 &gt;= 400 自动停止：</span>
               <Checkbox checked={stopOnError} onChange={e => setStopOnError(e.target.checked)} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span>断言包含字符串（不包含则停止）：</span>
-              <Input placeholder="例如: success" value={assertString} onChange={e => setAssertString(e.target.value)} />
+              <span>响应包含关键字即停止：</span>
+              <Input placeholder="例如: 验证失败" value={stopKeyword} onChange={e => setStopKeyword(e.target.value)} />
             </div>
           </Space>
         </Modal>

@@ -1,20 +1,18 @@
+// src/renderer/src/components/HarViewer.jsx
 import { useState } from 'react';
 import {
-  Flex, Typography, Upload, Button, Select, App,
+  Flex, Typography, Upload, Button, App,
 } from 'antd';
 import { UploadOutlined, FileTextOutlined } from '@ant-design/icons';
 import RequestWorkbench from './RequestWorkbench';
 import AddToProjectModal from './AddToProjectModal';
 import { parseHar, genUid, setPath } from '../utils/har';
-import { useProjects } from '../store/projectStore';
 
 const { Text } = Typography;
 
 export default function HarViewer({ entries, setEntries, fileName, setFileName, flushHar }) {
   const { message } = App.useApp();
-  const { projects } = useProjects();
   const [loading, setLoading] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState();
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [pendingAddEntries, setPendingAddEntries] = useState([]);
 
@@ -67,15 +65,6 @@ export default function HarViewer({ entries, setEntries, fileName, setFileName, 
       <Flex justify="space-between" align="center">
         <Text strong>HAR 查看器</Text>
         <Flex gap={6} align="center">
-          <Select
-            size="small"
-            placeholder="选择项目（仅用于算法上下文）"
-            allowClear
-            value={selectedProjectId}
-            onChange={setSelectedProjectId}
-            style={{ width: 180 }}
-            options={projects.map((p) => ({ value: p.id, label: p.name }))}
-          />
           <Upload accept=".har,application/json" showUploadList={false}
             beforeUpload={(file) => handleFile(file)}>
             <Button size="small" icon={<UploadOutlined />} loading={loading}>
@@ -107,7 +96,7 @@ export default function HarViewer({ entries, setEntries, fileName, setFileName, 
       <RequestWorkbench
         entries={entries}
         setEntries={setEntries}
-        projectId={selectedProjectId}
+        projectId={undefined} // 无需项目绑定
         showSelection={true}
         showAddToProject={true}
         onAddToProject={handleAddToProject}
