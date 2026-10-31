@@ -1,3 +1,4 @@
+// src/renderer/src/components/RequestWorkbench.jsx
 import { useEffect, useMemo, useState } from 'react';
 import {
   Splitter, Flex, Input, Select, Segmented, Typography, Tag,
@@ -9,18 +10,8 @@ import { formatTime, statusColor, parseUrlParts, genUid } from '../utils/har';
 
 const { Text } = Typography;
 
-const METHOD_COLOR = {
-  GET: 'blue', POST: 'green', PUT: 'orange', DELETE: 'red',
-  PATCH: 'purple', HEAD: 'default', OPTIONS: 'default',
-};
-
-const STATUS_RANGE = {
-  ALL: () => true,
-  '2xx': (s) => s >= 200 && s < 300,
-  '3xx': (s) => s >= 300 && s < 400,
-  '4xx': (s) => s >= 400 && s < 500,
-  '5xx': (s) => s >= 500,
-};
+const METHOD_COLOR = { GET: 'blue', POST: 'green', PUT: 'orange', DELETE: 'red', PATCH: 'purple', HEAD: 'default', OPTIONS: 'default' };
+const STATUS_RANGE = { ALL: () => true, '2xx': (s) => s >= 200 && s < 300, '3xx': (s) => s >= 300 && s < 400, '4xx': (s) => s >= 400 && s < 500, '5xx': (s) => s >= 500 };
 
 export default function RequestWorkbench({
   entries, setEntries, projectId,
@@ -28,6 +19,7 @@ export default function RequestWorkbench({
   headerExtra = null, headerTopExtra = null, emptyNode = null,
   enableDrag = false, onReorder,
   onUpdateRequest, onUpdateResponse, onSendRequest,
+  groupConfigs = {}, onSaveGroupConfig,
 }) {
   const { message } = App.useApp();
   const [keyword, setKeyword] = useState('');
@@ -44,17 +36,9 @@ export default function RequestWorkbench({
     setEntries(entries.map((e) => (e._uid ? e : { ...e, _uid: genUid() })));
   }, [entries, setEntries]);
 
-  const current = useMemo(
-    () => entries.find((e) => e._uid === currentUid) || null,
-    [entries, currentUid]
-  );
-
+  const current = useMemo(() => entries.find((e) => e._uid === currentUid) || null, [entries, currentUid]);
   const chainContext = useMemo(() => {
-    const responses = entries.map((e, i) => ({
-      index: i,
-      response: e.response || { status: 0, statusText: '', headers: [], body: '' },
-      entry: e,
-    }));
+    const responses = entries.map((e, i) => ({ index: i, response: e.response || { status: 0, statusText: '', headers: [], body: '' }, entry: e }));
     const currentStep = currentUid ? entries.findIndex((e) => e._uid === currentUid) : -1;
     return { responses, currentStep };
   }, [entries, currentUid]);
@@ -73,10 +57,7 @@ export default function RequestWorkbench({
       if (method !== 'ALL' && m !== method) return false;
       if (!rangeFn(s)) return false;
       if (!kw) return true;
-      return (
-        (e.request?.url || '').toLowerCase().includes(kw) ||
-        m?.toLowerCase().includes(kw)
-      );
+      return (e.request?.url || '').toLowerCase().includes(kw) || m?.toLowerCase().includes(kw);
     });
   }, [entries, keyword, method, statusRange]);
 
@@ -86,16 +67,14 @@ export default function RequestWorkbench({
   const toggleSelect = (entry) => {
     setSelectedUids((prev) => {
       const next = new Set(prev);
-      if (next.has(entry._uid)) next.delete(entry._uid);
-      else next.add(entry._uid);
+      if (next.has(entry._uid)) next.delete(entry._uid); else next.add(entry._uid);
       return next;
     });
   };
 
   const toggleSelectAll = () => {
     const next = new Set(selectedUids);
-    if (allChecked) filtered.forEach((e) => next.delete(e._uid));
-    else filtered.forEach((e) => next.add(e._uid));
+    if (allChecked) filtered.forEach((e) => next.delete(e._uid)); else filtered.forEach((e) => next.add(e._uid));
     setSelectedUids(next);
   };
 
@@ -104,15 +83,8 @@ export default function RequestWorkbench({
     if (idx < 0) return;
     const next = entries.filter((e) => e._uid !== entry._uid);
     setEntries(next);
-
-    if (currentUid === entry._uid) {
-      setCurrentUid(next[idx]?._uid || next[idx - 1]?._uid || null);
-    }
-    setSelectedUids((prev) => {
-      const n = new Set(prev);
-      n.delete(entry._uid);
-      return n;
-    });
+    if (currentUid === entry._uid) setCurrentUid(next[idx]?._uid || next[idx - 1]?._uid || null);
+    setSelectedUids((prev) => { const n = new Set(prev); n.delete(entry._uid); return n; });
   };
 
   const handleAddClick = () => {
@@ -121,20 +93,9 @@ export default function RequestWorkbench({
     setSelectedUids(new Set());
   };
 
-  const handleDragStart = (e, idx) => {
-    setDraggingIndex(idx);
-    e.dataTransfer.effectAllowed = 'move';
-  };
-  const handleDragOver = (e, idx) => {
-    e.preventDefault();
-    if (dropIndex !== idx) setDropIndex(idx);
-  };
-  const handleDrop = (e, idx) => {
-    e.preventDefault();
-    if (draggingIndex != null && draggingIndex !== idx && onReorder) onReorder(draggingIndex, idx);
-    setDraggingIndex(null);
-    setDropIndex(null);
-  };
+  const handleDragStart = (e, idx) => { setDraggingIndex(idx); e.dataTransfer.effectAllowed = 'move'; };
+  const handleDragOver = (e, idx) => { e.preventDefault(); if (dropIndex !== idx) setDropIndex(idx); };
+  const handleDrop = (e, idx) => { e.preventDefault(); if (draggingIndex != null && draggingIndex !== idx && onReorder) onReorder(draggingIndex, idx); setDraggingIndex(null); setDropIndex(null); };
 
   const renderRow = (entry, idx) => {
     const req = entry.request || {};
@@ -144,22 +105,9 @@ export default function RequestWorkbench({
     const isChecked = selectedUids.has(entry._uid);
 
     const rowContent = (
-      <div
-        onClick={() => setCurrentUid(entry._uid)}
-        style={{
-          padding: '8px 12px',
-          cursor: 'pointer',
-          fontSize: 12,
-          background: isCurrent ? '#e6f4ff' : 'transparent',
-          borderBottom: '1px solid #f0f0f0',
-          opacity: draggingIndex === idx ? 0.4 : 1,
-          outline: (dropIndex === idx && draggingIndex !== idx) ? '2px dashed #1677ff' : 'none',
-        }}
-      >
+      <div onClick={() => setCurrentUid(entry._uid)} style={{ padding: '8px 12px', cursor: 'pointer', fontSize: 12, background: isCurrent ? '#e6f4ff' : 'transparent', borderBottom: '1px solid #f0f0f0', opacity: draggingIndex === idx ? 0.4 : 1, outline: (dropIndex === idx && draggingIndex !== idx) ? '2px dashed #1677ff' : 'none' }}>
         <Flex align="center" gap={8}>
-          {showSelection && (
-            <Checkbox checked={isChecked} onChange={() => toggleSelect(entry)} onClick={(e) => e.stopPropagation()} />
-          )}
+          {showSelection && <Checkbox checked={isChecked} onChange={() => toggleSelect(entry)} onClick={(e) => e.stopPropagation()} />}
           <Tag color={METHOD_COLOR[req.method] || 'default'} style={{ margin: 0, minWidth: 50, textAlign: 'center' }}>{req.method}</Tag>
           <Tag color={statusColor(res.status)} style={{ margin: 0, minWidth: 40, textAlign: 'center' }}>{res.status}</Tag>
           <Text ellipsis style={{ flex: 1, minWidth: 0 }} title={req.url}>{parts.host}{parts.path}</Text>
@@ -180,7 +128,7 @@ export default function RequestWorkbench({
 
   return (
     <Splitter style={{ height: '100%' }}>
-      <Splitter.Panel defaultSize="40%" min="25%">
+      <Splitter.Panel defaultSize="35%" min="20%" collapsible>
         <Flex vertical style={{ height: '100%', background: '#fff', borderRight: '1px solid #f0f0f0' }}>
           <Flex vertical gap={8} style={{ padding: 12, borderBottom: '1px solid #f0f0f0' }}>
             {headerTopExtra}
@@ -223,6 +171,8 @@ export default function RequestWorkbench({
             onUpdateRequest={onUpdateRequest}
             onUpdateResponse={onUpdateResponse}
             onSendRequest={onSendRequest}
+            groupConfigs={groupConfigs}
+            onSaveGroupConfig={onSaveGroupConfig}
           />
         ) : (
           <Flex justify="center" align="center" style={{ height: '100%' }}><Empty description="从左侧选择一条请求" /></Flex>

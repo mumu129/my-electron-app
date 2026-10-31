@@ -1,5 +1,5 @@
 // src/renderer/src/components/RequestDetail.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Flex, Typography, Tag, Button, Empty, Space, App, Segmented } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
 import { useReplay } from '../store/replayStore';
@@ -7,20 +7,27 @@ import HackvertorEditor from './HackvertorEditor';
 
 const { Text } = Typography;
 
-export default function RequestDetail({ entry, onUpdateRequest }) {
+export default function RequestDetail({ 
+  entry, onUpdateRequest, groupConfigs = {}, onSaveGroupConfig 
+}) {
   const { message } = App.useApp();
   const { sendToReplay } = useReplay();
   const [activeTab, setActiveTab] = useState('request');
+  const lastEntryUid = useRef(null);
+  const [localRaw, setLocalRaw] = useState('');
 
-  const req = entry?.request || {};
-  const res = entry?.response || {};
+  useEffect(() => {
+    if (!entry || !entry.request) {
+      setLocalRaw('');
+      return;
+    }
+    if (lastEntryUid.current === entry._uid) return;
 
-  // 生成原始请求报文
-  const getRawRequest = () => {
-    if (!entry) return '';
+    const req = entry.request;
     let s = `${req.method || 'GET'} ${req.url || ''} HTTP/1.1\n`;
     const seenHeaders = new Set();
     const uniqueHeaders = [];
+    
     const headersArr = req.headers || [];
     for (let i = headersArr.length - 1; i >= 0; i--) {
       const h = headersArr[i];
@@ -37,22 +44,18 @@ export default function RequestDetail({ entry, onUpdateRequest }) {
       const firstLineEnd = body.indexOf('\n\n');
       if (firstLineEnd > -1) body = body.slice(firstLineEnd + 2);
     }
+    
     if (body) s += body;
-    return s;
-  };
-
-  const [localRaw, setLocalRaw] = useState(getRawRequest);
-  const [prevUid, setPrevUid] = useState(entry?._uid);
-
-  // 核心修复：不再用 useEffect（它是异步的，会导致点击太快发送旧数据）。改用渲染期同步更新。
-  if (entry?._uid !== prevUid) {
-    setPrevUid(entry?._uid);
-    setLocalRaw(getRawRequest());
-  }
+    setLocalRaw(s);
+    lastEntryUid.current = entry._uid;
+  }, [entry]);
 
   if (!entry) {
     return <Flex justify="center" align="center" style={{ height: '100%' }}><Empty description="未选择请求" /></Flex>;
   }
+
+  const req = entry.request || {};
+  const res = entry.response || {};
 
   let rawRes = `HTTP/1.1 ${res.status} ${res.statusText}\n`;
   (res.headers || []).forEach(h => { if (h.name) rawRes += `${h.name}: ${h.value}\n`; });
@@ -83,7 +86,7 @@ export default function RequestDetail({ entry, onUpdateRequest }) {
 
   const handleSendToReplay = () => {
     sendToReplay({
-      _id: Date.now().toString(), // 给个唯一 id 强制刷新
+      _id: Date.now().toString(),
       method: req.method || 'GET',
       url: req.url || '',
       rawText: localRaw
@@ -128,7 +131,13 @@ export default function RequestDetail({ entry, onUpdateRequest }) {
         
         <div style={{ flex: 1, minHeight: 0, padding: 16 }}>
           {activeTab === 'request' ? (
-            <HackvertorEditor value={localRaw} onChange={handleSaveRequest} readOnly={false} />
+            <HackvertorEditor 
+              value={localRaw} 
+              onChange={handleSaveRequest} 
+              readOnly={false} 
+              groupConfigs={groupConfigs}
+              onSaveGroupConfig={onSaveGroupConfig}
+            />
           ) : (
             <HackvertorEditor value={rawRes} readOnly={true} />
           )}

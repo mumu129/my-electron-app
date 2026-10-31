@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Flex, Modal, Form, Input, Tag, Space, Typography, App, List, Button, Splitter, Segmented } from 'antd';
 import { 
   TagOutlined, CodeOutlined, SafetyCertificateOutlined, SearchOutlined, 
-  FullscreenOutlined, FullscreenExitOutlined, MenuFoldOutlined, MenuUnfoldOutlined 
+  MenuFoldOutlined, MenuUnfoldOutlined 
 } from '@ant-design/icons';
 import { processTags, wrapTag } from '../utils/hackTags';
 import { TRANSFORMS, TRANSFORM_GROUPS, applyTransform } from '../utils/strictTransforms';
@@ -27,11 +27,13 @@ function highlightText(text) {
       else if (open.startsWith('enc:')) color = '#389e0d';
       else if (open.startsWith('var:')) color = '#1677ff';
       else if (open.startsWith('script:')) color = '#fa8c16';
+      else if (open.startsWith('env:')) color = '#eb2f96';
     } else if (close) {
       if (close.startsWith('dec:')) color = '#cf1322';
       else if (close.startsWith('enc:')) color = '#389e0d';
       else if (close.startsWith('var:')) color = '#1677ff';
       else if (close.startsWith('script:')) color = '#fa8c16';
+      else if (close.startsWith('env:')) color = '#eb2f96';
     }
     return `<span style="color: ${color}; font-weight: bold;">${match}</span>`;
   });
@@ -50,7 +52,6 @@ const commonEditorStyle = {
   boxSizing: 'border-box',
 };
 
-// 极简 JSON 树组件 (原生 details 标签实现折叠)
 function JsonTree({ data, isRoot = false }) {
   if (data === null) return <span style={{ color: '#999' }}>null</span>;
   if (typeof data === 'boolean') return <span style={{ color: '#fa8c16' }}>{String(data)}</span>;
@@ -95,7 +96,7 @@ function JsonTree({ data, isRoot = false }) {
   return <span>{String(data)}</span>;
 }
 
-export default function HackvertorEditor({ value, onChange, placeholder, readOnly = false }) {
+export default function HackvertorEditor({ value, onChange, placeholder, readOnly = false, groupConfigs = {}, onSaveGroupConfig }) {
   const { message } = App.useApp();
   const { scripts } = useScripts();
   
@@ -111,8 +112,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
   const [renderedValue, setRenderedValue] = useState('');
   const [renderedJson, setRenderedJson] = useState(null);
   const [isRendering, setIsRendering] = useState(false);
-  const [previewMode, setPreviewMode] = useState('text'); // 'text' | 'tree'
-  const [isFullscreen, setIsFullscreen] = useState(false); // 全屏状态
+  const [previewMode, setPreviewMode] = useState('text'); 
   
   const [form] = Form.useForm();
   const textareaRef = useRef(null);
@@ -129,11 +129,10 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
         try {
           const parsed = JSON.parse(res);
           setRenderedJson(parsed);
-          // 如果解析成功，且当前是纯文本模式（初始状态），自动切到树形展示
           if (previewMode === 'text' && typeof parsed === 'object') setPreviewMode('tree');
         } catch {
           setRenderedJson(null);
-          setPreviewMode('text'); // 不是 JSON 则强制切回文本
+          setPreviewMode('text'); 
         }
       })
       .catch((err) => { if (!canceled) setRenderedValue(`[渲染错误: ${err.message}]`); })
@@ -216,38 +215,11 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
       try {
         const scriptDef = scripts[item.key];
         if (scriptDef && scriptDef.code) {
-          console.log(`[Renderer] 准备执行脚本: ${item.key}`, scriptDef.code);
-          
-          const r = await window.electronAPI.script.run({ 
-            code: scriptDef.code, 
-            input: selectedText.text, 
-            config: {} 
-          });
-          
-          console.log(`[Renderer] 脚本执行返回:`, r);
-          
-          if (r.ok) {
-            // 如果脚本返回了值，就用返回值替换文本
-            if (r.value !== undefined && r.value !== null) {
-              resultText = String(r.value);
-            }
-          } else {
-            // 主进程报错了，显示报错信息
-            message.error(`脚本报错: ${r.error}`);
-            setPickerOpen(false);
-            return;
-          }
-        } else {
-          message.error('找不到该脚本的代码，请重新配置');
-          setPickerOpen(false);
-          return;
+          const r = await window.electronAPI.script.run({ code: scriptDef.code, input: selectedText.text, config: {} });
+          if (r.ok) resultText = r.value;
+          else message.warning(`脚本报错: ${r.error}`);
         }
-      } catch (e) { 
-        console.error('[Renderer] 脚本执行异常:', e);
-        message.error(`脚本执行异常: ${e.message}`);
-        setPickerOpen(false);
-        return;
-      }
+      } catch (e) { message.warning(`脚本执行失败: ${e.message}`); }
 
       const wrapped = wrapTag(`script:${item.key}`, resultText);
       const { newText } = commitReplacement(value, selectedText.start, selectedText.end, wrapped);
@@ -261,13 +233,21 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     }
     
     const tpl = item.tpl;
+    
     if (tpl?.configFields?.length) {
-      form.resetFields();
-      const defaults = {};
-      tpl.configFields.forEach((f) => { if (f.defaultValue) defaults[f.name] = f.defaultValue; });
-      form.setFieldsValue(defaults);
-      setParamModal({ visible: true, action: { algoKey: item.key, type: pickerMode } });
-      setPickerOpen(false);
+      const savedConfig = groupConfigs[item.key];
+      const hasAllRequired = tpl.configFields.every(f => !f.required || (savedConfig && savedConfig[f.name]));
+      
+      if (savedConfig && hasAllRequired) {
+        doTransform(item.key, pickerMode, savedConfig);
+      } else {
+        form.resetFields();
+        const defaults = savedConfig || {};
+        tpl.configFields.forEach((f) => { if (f.defaultValue && !defaults[f.name]) defaults[f.name] = f.defaultValue; });
+        form.setFieldsValue(defaults);
+        setParamModal({ visible: true, action: { algoKey: item.key, type: pickerMode } });
+        setPickerOpen(false);
+      }
     } else {
       doTransform(item.key, pickerMode, {});
     }
@@ -301,7 +281,14 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
   const handleModalOk = async () => {
     try {
       const values = await form.validateFields();
-      await doTransform(paramModal.action.algoKey, paramModal.action.type, values);
+      const algoKey = paramModal.action.algoKey;
+      
+      if (onSaveGroupConfig) {
+        onSaveGroupConfig(algoKey, values);
+        message.success(`已记住该算法的密钥配置，下次无需重复输入`);
+      }
+      
+      await doTransform(algoKey, paramModal.action.type, values);
     } catch {}
   };
 
@@ -323,32 +310,22 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     .json-tree-container::-webkit-scrollbar-thumb { background: #d9d9d9; border-radius: 4px; }
   `;
 
-  const innerContent = (
-    <Flex vertical style={{ background: '#fff', border: '1px solid #d9d9d9', borderRadius: isFullscreen ? 0 : 6, overflow: 'hidden', width: '100%', height: '100%' }}>
+  return (
+    <Flex vertical style={{ background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden', width: '100%', height: '100%' }}>
       <style>{styles}</style>
       
-      {/* 顶部工具栏 */}
       <Flex justify="space-between" align="center" style={{ padding: '4px 8px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
         <Space size={4}>
           <TagOutlined style={{ color: '#1677ff' }} />
           <Text strong style={{ fontSize: 12 }}>Hackvertor 编辑器</Text>
           <Text type="secondary" style={{ fontSize: 11 }}>（选中文字右键选择算法）</Text>
         </Space>
-        <Space>
-          {isRendering && <Text type="secondary" style={{ fontSize: 11 }}>计算中...</Text>}
-          <Button 
-            size="small" 
-            type="text" 
-            icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} 
-            onClick={() => setIsFullscreen(!isFullscreen)} 
-          />
-        </Space>
+        <Space>{isRendering && <Text type="secondary" style={{ fontSize: 11 }}>计算中...</Text>}</Space>
       </Flex>
 
-      <Splitter layout="vertical" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      <Splitter style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
         
-        {/* 上方：编辑区 */}
-        <Splitter.Panel defaultSize="50%" min="20%">
+        <Splitter.Panel defaultSize="50%" min="25%">
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <div style={{ padding: '4px 8px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', fontSize: 11, color: '#888', flexShrink: 0 }}>
               <CodeOutlined /> 报文编辑（明文，可继续修改加标签）
@@ -387,7 +364,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
           </div>
         </Splitter.Panel>
 
-        {/* 下方：预览区 (带视图切换) */}
         <Splitter.Panel>
           <div style={{ height: '100%', background: '#f6ffed', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <Flex justify="space-between" align="center" style={{ padding: '4px 8px', background: '#d9f7be', borderBottom: '1px solid #b7eb8f', fontSize: 11, color: '#389e0d', flexShrink: 0 }}>
@@ -423,7 +399,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
         </Splitter.Panel>
       </Splitter>
 
-      {/* 算法选择器弹窗 */}
       <Modal title="选择算法或操作" open={pickerOpen} onCancel={() => setPickerOpen(false)} footer={null} width={700} styles={{ body: { padding: 0 } }}>
         <div style={{ display: 'flex', height: 450 }}>
           <div style={{ width: 180, borderRight: '1px solid #f0f0f0', background: '#fafafa', display: 'flex', flexDirection: 'column' }}>
@@ -459,18 +434,39 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
         </div>
       </Modal>
 
-      {/* 参数配置弹窗 */}
-      <Modal title={<span>配置参数：<Tag color="blue">{TRANSFORMS[paramModal.action?.algoKey]?.label}</Tag></span>} open={paramModal.visible} onOk={handleModalOk} onCancel={() => setParamModal({ visible: false, action: null })} okText="应用并计算" destroyOnHidden>
+      <Modal 
+        title={<span>配置参数：<Tag color="blue">{TRANSFORMS[paramModal.action?.algoKey]?.label}</Tag></span>} 
+        open={paramModal.visible} 
+        onOk={handleModalOk} 
+        onCancel={() => setParamModal({ visible: false, action: null })} 
+        okText="应用并记忆" 
+        width={paramModal.action?.algoKey === 'js-expression' ? 800 : 520}
+        destroyOnHidden
+      >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+          {paramModal.action?.algoKey === 'js-expression' && (
+            <div style={{ marginBottom: 16, padding: 12, background: '#e6f4ff', borderRadius: 6, border: '1px solid #91caff' }}>
+              <Text strong style={{ display: 'block', marginBottom: 8 }}>💡 快捷提取向导：</Text>
+              <Space wrap>
+                <Button size="small" onClick={() => {
+                  const val = form.getFieldValue('code') || '';
+                  form.setFieldsValue({ code: val + `\nconst data0 = JSON.parse(responses[0]?.body || '{}');\nreturn data0.token;` });
+                }}>从请求0取token</Button>
+                <Button size="small" onClick={() => {
+                  const val = form.getFieldValue('code') || '';
+                  form.setFieldsValue({ code: val + `\nreturn await md5(vars.uid + vars.ts);` });
+                }}>计算MD5签名</Button>
+              </Space>
+            </div>
+          )}
           {paramModal.action && TRANSFORMS[paramModal.action.algoKey]?.configFields?.map((f) => (
             <Form.Item key={f.name} name={f.name} label={f.label} rules={[{ required: f.required, message: `请输入 ${f.label}` }]}>
-              {f.multiline ? <Input.TextArea rows={6} /> : <Input placeholder={f.defaultValue || ''} />}
+              {f.multiline ? <Input.TextArea rows={paramModal.action?.algoKey === 'js-expression' ? 12 : 6} style={{ fontFamily: 'monospace' }} /> : <Input placeholder={f.defaultValue || ''} />}
             </Form.Item>
           ))}
         </Form>
       </Modal>
 
-      {/* 提取变量弹窗 */}
       <Modal title="提取为变量" open={varModal.visible} onOk={handleVarOk} onCancel={() => setVarModal({ visible: false })} okText="提取">
         <Form form={varForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="name" label="变量名（供 JS 表达式调用）" rules={[{ required: true, pattern: /^[a-zA-Z0-9_]+$/, message: '只能包含字母数字下划线' }]}>
@@ -480,15 +476,4 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
       </Modal>
     </Flex>
   );
-
-  // 如果全屏，用固定定位包裹
-  if (isFullscreen) {
-    return (
-      <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: 9999, background: '#fff' }}>
-        {innerContent}
-      </div>
-    );
-  }
-
-  return innerContent;
 }

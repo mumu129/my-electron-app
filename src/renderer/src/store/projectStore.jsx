@@ -1,3 +1,4 @@
+// src/renderer/src/store/projectStore.jsx
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { deepClone, setPath } from '../utils/har';
 
@@ -23,6 +24,12 @@ export function ProjectProvider({ children }) {
     catch (e) { console.error('[ProjectStore] 持久化失败:', e); }
   }, [projects]);
 
+  const importProject = (data) => {
+    const p = { ...data, id: uid(), createdAt: Date.now() }; // 重新生成ID防冲突
+    setProjects((prev) => [...prev, p]);
+    return p;
+  };
+
   const createProject = (name) => {
     const p = { id: uid(), name, createdAt: Date.now(), groups: [], proxy: '' };
     setProjects((prev) => [...prev, p]);
@@ -33,14 +40,14 @@ export function ProjectProvider({ children }) {
     setProjects((prev) => prev.filter((p) => p.id !== projectId));
   };
 
-  const updateProjectProxy = (projectId, proxy) => {
+  const renameProject = (projectId, newName) => {
     setProjects((prev) =>
-      prev.map((p) => (p.id === projectId ? { ...p, proxy: proxy || '' } : p))
+      prev.map((p) => (p.id === projectId ? { ...p, name: newName } : p))
     );
   };
 
   const createGroup = (projectId, name) => {
-    const g = { id: uid(), name, requests: [] };
+    const g = { id: uid(), name, requests: [], configs: {}, proxy: '' };
     setProjects((prev) =>
       prev.map((p) => p.id === projectId ? { ...p, groups: [...p.groups, g] } : p)
     );
@@ -56,6 +63,30 @@ export function ProjectProvider({ children }) {
           ? { ...p, groups: p.groups.map((g) => g.id === groupId ? { ...g, name: n } : g) }
           : p
       )
+    );
+  };
+
+  const updateGroupProxy = (projectId, groupId, proxy) => {
+    setProjects((prev) =>
+      prev.map((p) => {
+        if (p.id !== projectId) return p;
+        return { ...p, groups: p.groups.map((g) => g.id === groupId ? { ...g, proxy } : g) };
+      })
+    );
+  };
+
+  const updateGroupConfig = (projectId, groupId, algoKey, config) => {
+    setProjects((prev) =>
+      prev.map((p) => {
+        if (p.id !== projectId) return p;
+        return {
+          ...p,
+          groups: p.groups.map((g) => {
+            if (g.id !== groupId) return g;
+            return { ...g, configs: { ...(g.configs || {}), [algoKey]: config } };
+          }),
+        };
+      })
     );
   };
 
@@ -138,7 +169,6 @@ export function ProjectProvider({ children }) {
     );
   };
 
-  // ⬇ 新增：请求组内请求拖拽排序
   const reorderGroupRequests = (projectId, groupId, fromIndex, toIndex) => {
     if (fromIndex === toIndex) return;
     setProjects((prev) =>
@@ -230,10 +260,10 @@ export function ProjectProvider({ children }) {
 
   return (
     <ProjectContext.Provider value={{
-      projects, createProject, deleteProject, updateProjectProxy,
-      createGroup, renameGroup, moveGroup, reorderGroups, deleteGroup,
+      projects, importProject, createProject, deleteProject, renameProject,
+      createGroup, renameGroup, updateGroupProxy, moveGroup, reorderGroups, deleteGroup,
       addRequestsToGroup, updateGroupRequests, reorderGroupRequests,
-      updateRequestFields, applyResponse, resetGroupRequests,
+      updateRequestFields, applyResponse, resetGroupRequests, updateGroupConfig,
     }}>
       {children}
     </ProjectContext.Provider>

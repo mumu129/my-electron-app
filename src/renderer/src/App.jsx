@@ -3,23 +3,23 @@ import React, { useEffect, useState } from 'react';
 import { App as AntApp, Breadcrumb, Layout, Menu, theme, Spin, Flex } from 'antd';
 import {
   FileTextOutlined, ProjectOutlined, ExperimentOutlined,
-  PlusOutlined, HistoryOutlined, SettingOutlined, GlobalOutlined, SendOutlined,
+  PlusOutlined, HistoryOutlined, GlobalOutlined, SendOutlined, ControlOutlined,
 } from '@ant-design/icons';
 import ErrorBoundary from './components/ErrorBoundary';
 import HarViewer from './components/HarViewer';
 import ProjectNewPage from './pages/ProjectNewPage';
 import ProjectHistoryPage from './pages/ProjectHistoryPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
-import ProjectSettingsPage from './pages/ProjectSettingsPage';
 import GlobalAlgorithmPage from './pages/GlobalAlgorithmPage';
+import GlobalEnvPage from './pages/GlobalEnvPage';
 import ReplayPage from './pages/ReplayPage';
 import { ProjectProvider, useProjects } from './store/projectStore';
 import { AlgorithmProvider } from './store/algorithmStore';
 import { ScriptProvider } from './store/scriptStore';
+import { EnvProvider } from './store/envStore';
 import usePersistentState from './hooks/usePersistentState';
 import useIDBState from './hooks/useIDBState';
 
-// ✅ 引入新的 store
 import { ReplayContext } from './store/replayStore';
 
 const { Header, Content, Footer } = Layout;
@@ -34,7 +34,6 @@ const items = [
       children: [
         { key: 'project-new', label: '新建项目', icon: <PlusOutlined /> },
         { key: 'project-history', label: '历史项目', icon: <HistoryOutlined /> },
-        { key: 'project-settings', label: '项目设置', icon: <SettingOutlined /> },
       ],
     }],
   },
@@ -44,6 +43,7 @@ const items = [
       type: 'group', label: '算法配置',
       children: [
         { key: 'algorithm-global', label: '全局算法', icon: <GlobalOutlined /> },
+        { key: 'algorithm-env', label: '环境变量', icon: <ControlOutlined /> },
       ],
     }],
   },
@@ -54,8 +54,8 @@ const BREADCRUMBS = {
   replay: [{ title: '重发台' }],
   'project-new': [{ title: '项目' }, { title: '新建项目' }],
   'project-history': [{ title: '项目' }, { title: '历史项目' }],
-  'project-settings': [{ title: '项目' }, { title: '项目设置' }],
   'algorithm-global': [{ title: '算法' }, { title: '全局算法' }],
+  'algorithm-env': [{ title: '算法' }, { title: '环境变量' }],
 };
 
 function AppInner() {
@@ -65,7 +65,6 @@ function AppInner() {
   const [harFileName, setHarFileName] = usePersistentState('ui-har-filename', '');
   const [harEntries, setHarEntries, harMeta] = useIDBState('har-entries-v1', []);
 
-  // 重发台的数据源
   const [replayData, setReplayData] = useState(null);
 
   const { token: { colorBgContainer, borderRadiusLG } } = theme.useToken();
@@ -97,17 +96,15 @@ function AppInner() {
         return (
           <HarViewer entries={harEntries} setEntries={setHarEntries} fileName={harFileName} setFileName={setHarFileName} flushHar={harMeta.flush} />
         );
-      // ✅ 核心修复：加上 key，确保数据变更时 ReplayPage 整个组件重新挂载并刷新
       case 'replay': return <ReplayPage key={replayData?._id || 'replay'} initialData={replayData} />;
       case 'project-new': return <ProjectNewPage />;
       case 'project-history': return <ProjectHistoryPage onOpenProject={(id) => setViewingProjectId(id)} />;
-      case 'project-settings': return <ProjectSettingsPage />;
       case 'algorithm-global': return <GlobalAlgorithmPage />;
+      case 'algorithm-env': return <GlobalEnvPage />;
       default: return null;
     }
   };
 
-  // 提供给子组件跳转到重发台的方法
   const sendToReplay = (data) => {
     setReplayData(data);
     setCurrent('replay');
@@ -142,7 +139,9 @@ function AppInner() {
 export default function App() {
   return (
     <AntApp>
-      <AlgorithmProvider><ProjectProvider><ScriptProvider><AppInner /></ScriptProvider></ProjectProvider></AlgorithmProvider>
+      <EnvProvider>
+        <AlgorithmProvider><ProjectProvider><ScriptProvider><AppInner /></ScriptProvider></ProjectProvider></AlgorithmProvider>
+      </EnvProvider>
     </AntApp>
   );
 }
