@@ -1,17 +1,20 @@
+// src/renderer/src/components/AddToProjectModal.jsx
 import React, { useEffect, useMemo, useState } from 'react';
-import { Modal, Select, AutoComplete, App as AntApp } from 'antd';
+import { Modal, Select, AutoComplete, App as AntApp, Radio } from 'antd';
 import { useProjects } from '../store/projectStore';
 
 export default function AddToProjectModal({ open, onClose, entries, onAdded }) {
-  const { projects, createGroup, addRequestsToGroup } = useProjects();
+  const { projects, createGroup, addRequestsToGroup, addRequestsToSubGroup } = useProjects();
   const { message } = AntApp.useApp();
   const [projectId, setProjectId] = useState();
   const [groupName, setGroupName] = useState('');
+  const [targetLevel, setTargetLevel] = useState('main'); // 'main' 主组 | 'sub' 副组
 
   useEffect(() => {
     if (open) {
       setProjectId(projects[0]?.id);
       setGroupName('');
+      setTargetLevel('main');
     }
   }, [open, projects]);
 
@@ -20,7 +23,7 @@ export default function AddToProjectModal({ open, onClose, entries, onAdded }) {
   const groupOptions = useMemo(
     () => (currentProject?.groups || []).map((g) => ({
       value: g.name,
-      label: `${g.name}（${g.requests.length} 条）`,
+      label: `${g.name}（主:${g.requests.length} 副:${g.subGroup?.requests?.length || 0}）`,
     })),
     [currentProject]
   );
@@ -32,10 +35,17 @@ export default function AddToProjectModal({ open, onClose, entries, onAdded }) {
       if (!name) { message.warning('请输入请求组名称'); return; }
       const project = projects.find((p) => p.id === projectId);
       if (!project) { message.error('项目不存在'); onClose(); return; }
+      
       let group = project.groups.find((g) => g.name === name);
       if (!group) group = createGroup(projectId, name);
-      addRequestsToGroup(projectId, group.id, entries);
-      message.success(`已添加 ${entries.length} 条请求到「${project.name} / ${name}」`);
+      
+      if (targetLevel === 'main') {
+        addRequestsToGroup(projectId, group.id, entries);
+      } else {
+        addRequestsToSubGroup(projectId, group.id, entries);
+      }
+      
+      message.success(`已添加 ${entries.length} 条请求到「${project.name} / ${name} (${targetLevel === 'main' ? '主组' : '副组'})」`);
       onAdded?.();
     } catch (e) {
       console.error('[AddToProjectModal] 出错:', e);
@@ -47,7 +57,7 @@ export default function AddToProjectModal({ open, onClose, entries, onAdded }) {
 
   return (
     <Modal
-      title={`添加 ${entries.length} 条请求到项目`}
+      title={`添加 ${entries.length} 条请求`}
       open={open}
       onOk={handleOk}
       onCancel={onClose}
@@ -66,20 +76,25 @@ export default function AddToProjectModal({ open, onClose, entries, onAdded }) {
           notFoundContent="还没有项目，请先到「新建项目」创建"
         />
       </div>
+
       <div style={{ marginTop: 16 }}>
-        <div style={{ marginBottom: 8, color: '#595959' }}>
-          请求组名称（选择已有或输入新名称自动创建）
-        </div>
+        <div style={{ marginBottom: 8, color: '#595959' }}>请求组名称</div>
         <AutoComplete
           style={{ width: '100%' }}
           placeholder="选择已有请求组或输入新名称"
           value={groupName}
           onChange={setGroupName}
           options={groupOptions}
-          filterOption={(input, option) =>
-            (option?.value || '').toLowerCase().includes(input.toLowerCase())
-          }
+          filterOption={(input, option) => (option?.value || '').toLowerCase().includes(input.toLowerCase())}
         />
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <div style={{ marginBottom: 8, color: '#595959' }}>添加到该组的层级：</div>
+        <Radio.Group value={targetLevel} onChange={e => setTargetLevel(e.target.value)} buttonStyle="solid">
+          <Radio.Button value="main">主组 (正常顺序执行)</Radio.Button>
+          <Radio.Button value="sub">副组 (条件触发执行)</Radio.Button>
+        </Radio.Group>
       </div>
     </Modal>
   );
