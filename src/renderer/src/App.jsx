@@ -4,6 +4,7 @@ import { App as AntApp, Breadcrumb, Layout, Menu, theme, Spin, Flex, Typography 
 import {
   FileTextOutlined, ProjectOutlined, ExperimentOutlined,
   PlusOutlined, HistoryOutlined, GlobalOutlined, SendOutlined, ControlOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import ErrorBoundary from './components/ErrorBoundary'
 import HarViewer from './components/HarViewer'
@@ -13,10 +14,12 @@ import ProjectDetailPage from './pages/ProjectDetailPage'
 import GlobalAlgorithmPage from './pages/GlobalAlgorithmPage'
 import GlobalEnvPage from './pages/GlobalEnvPage'
 import ReplayPage from './pages/ReplayPage'
+import SettingsPage from './pages/SettingsPage'                        // 💡 [新增]
 import { ProjectProvider, useProjects } from './store/projectStore'
 import { AlgorithmProvider } from './store/algorithmStore'
 import { ScriptProvider } from './store/scriptStore'
 import { EnvProvider } from './store/envStore'
+import { SettingsProvider } from './store/settingsStore'              // 💡 [新增]
 import usePersistentState from './hooks/usePersistentState'
 import useIDBState from './hooks/useIDBState'
 import { ReplayContext } from './store/replayStore'
@@ -24,8 +27,10 @@ import { ReplayContext } from './store/replayStore'
 const { Header, Content, Footer } = Layout
 const { Text } = Typography
 
-const VALID_KEYS = ['har', 'replay', 'project-new', 'project-history', 'algorithm-global', 'algorithm-env']
+// 💡 [修改] 加 'settings'
+const VALID_KEYS = ['har', 'replay', 'project-new', 'project-history', 'algorithm-global', 'algorithm-env', 'settings']
 
+// 💡 [修改] 加设置菜单项
 const items = [
   { key: 'har', label: 'HAR 查看器', icon: <FileTextOutlined /> },
   { key: 'replay', label: '重发台', icon: <SendOutlined /> },
@@ -37,8 +42,10 @@ const items = [
     { key: 'algorithm-global', label: '全局算法', icon: <GlobalOutlined /> },
     { key: 'algorithm-env', label: '环境变量', icon: <ControlOutlined /> },
   ] },
+  { key: 'settings', label: '设置', icon: <SettingOutlined /> },      // 💡 [新增]
 ]
 
+// 💡 [修改] 加 settings
 const BREADCRUMBS = {
   har: [{ title: 'HAR 查看器' }],
   replay: [{ title: '重发台' }],
@@ -46,6 +53,7 @@ const BREADCRUMBS = {
   'project-history': [{ title: '项目管理' }, { title: '历史项目' }],
   'algorithm-global': [{ title: '算法配置' }, { title: '全局算法' }],
   'algorithm-env': [{ title: '算法配置' }, { title: '环境变量' }],
+  settings: [{ title: '设置' }],                                     // 💡 [新增]
 }
 
 function AppInner() {
@@ -85,17 +93,16 @@ function AppInner() {
         if (!harMeta.loaded) return <Flex justify="center" align="center" style={{ height: '100%' }}><Spin tip="加载 HAR…" /></Flex>
         return <HarViewer entries={harEntries} setEntries={setHarEntries} fileName={harFileName} setFileName={setHarFileName} flushHar={harMeta.flush} />
       case 'replay':
-        // 💡 [修复] 用 _nonce 保证每次发送都会重新挂载
         return <ReplayPage key={replayData?._nonce || 'replay'} initialData={replayData} />
       case 'project-new': return <ProjectNewPage />
       case 'project-history': return <ProjectHistoryPage onOpenProject={(id) => setViewingProjectId(id)} />
       case 'algorithm-global': return <GlobalAlgorithmPage />
       case 'algorithm-env': return <GlobalEnvPage />
+      case 'settings': return <SettingsPage />                    
       default: return null
     }
   }
 
-  // 💡 [修复] 加 _nonce，同时退出项目详情
   const sendToReplay = (data) => {
     setViewingProjectId(null)
     setReplayData({ ...data, _nonce: Date.now() })
@@ -125,7 +132,6 @@ function AppInner() {
             background: isBare ? 'transparent' : colorBgContainer,
             borderRadius: isBare ? 0 : borderRadiusLG,
           }}>
-            {/* 💡 [修复] key 随页面变化，切页时自动重挂载 ErrorBoundary */}
             <ErrorBoundary key={`${current}:${viewingProjectId || ''}`}>{renderContent()}</ErrorBoundary>
           </div>
         </Content>
@@ -142,11 +148,12 @@ function AppInner() {
 export default function App() {
   return (
     <AntApp>
-      {/* 💡 [修复] Provider 层也包 ErrorBoundary，避免初始化异常白屏 */}
       <ErrorBoundary>
-        <EnvProvider>
-          <AlgorithmProvider><ProjectProvider><ScriptProvider><AppInner /></ScriptProvider></ProjectProvider></AlgorithmProvider>
-        </EnvProvider>
+        <SettingsProvider>                                          {/* 💡 [新增] 最外层包 settings */}
+          <EnvProvider>
+            <AlgorithmProvider><ProjectProvider><ScriptProvider><AppInner /></ScriptProvider></ProjectProvider></AlgorithmProvider>
+          </EnvProvider>
+        </SettingsProvider>
       </ErrorBoundary>
     </AntApp>
   )

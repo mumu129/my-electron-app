@@ -200,54 +200,55 @@ async function getProxySession(proxyUrl) {
 }
 
 function registerHttpHandler() {
-  ipcMain.handle('http:request', async (_event, { url, method, headers, body, proxy }) => {
-    const started = Date.now()
-    const timeoutMs = 30000
-    if (!url || typeof url !== 'string') return { status: 0, statusText: 'error', body: '[bad url] 空', headers: [], time: 0 }
-    try { new URL(url) } catch (e) { return { status: 0, statusText: 'error', body: `[bad url] ${url} -> ${e.message}`, headers: [], time: 0 } }
-    let proxySession = null
-    if (proxy) {
-      try { proxySession = await getProxySession(proxy) } catch (e) { return { status: 0, statusText: 'error', body: `[proxy error] ${e.message}`, headers: [], time: 0 } }
-    }
-    return new Promise((resolve) => {
-      let settled = false
-      const finish = (val) => { if (!settled) { settled = true; resolve(val) } }
-      let request
-      try {
-        const opts = { url, method: (method || 'GET').toUpperCase(), redirect: 'follow' }
-        if (proxySession) opts.session = proxySession
-        request = net.request(opts)
-      } catch (e) { return finish({ status: 0, statusText: 'error', body: `[net.request 失败] ${e.message}`, headers: [], time: 0 }) }
-      const timer = setTimeout(() => {
-        try { request.abort() } catch {}
-        finish({ status: 0, statusText: 'timeout', body: `请求超时（${timeoutMs}ms）\nurl=${url}`, headers: [], time: Date.now() - started })
-      }, timeoutMs)
-      Object.entries(headers || {}).forEach(([k, v]) => { try { request.setHeader(k, v) } catch {} })
-      request.on('response', (response) => {
-        const chunks = []
-        response.on('data', (c) => chunks.push(Buffer.from(c)))
-        response.on('end', () => {
-          clearTimeout(timer)
-          finish({
-            status: response.statusCode,
-            statusText: response.statusMessage || '',
-            headers: Object.entries(response.headers || {}).map(([k, v]) => ({ name: k, value: Array.isArray(v) ? v.join(', ') : String(v) })),
-            body: Buffer.concat(chunks).toString('utf-8'),
-            time: Date.now() - started,
-          })
+  ipcMain.handle('http:request', async (_event, { url, method, headers, body, proxy, timeoutMs }) => {
+  const started = Date.now()
+  // 💡 支持请求级超时
+  const timeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30000
+  if (!url || typeof url !== 'string') return { status: 0, statusText: 'error', body: '[bad url] 空', headers: [], time: 0 }
+  try { new URL(url) } catch (e) { return { status: 0, statusText: 'error', body: `[bad url] ${url} -> ${e.message}`, headers: [], time: 0 } }
+  let proxySession = null
+  if (proxy) {
+    try { proxySession = await getProxySession(proxy) } catch (e) { return { status: 0, statusText: 'error', body: `[proxy error] ${e.message}`, headers: [], time: 0 } }
+  }
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (val) => { if (!settled) { settled = true; resolve(val) } }
+    let request
+    try {
+      const opts = { url, method: (method || 'GET').toUpperCase(), redirect: 'follow' }
+      if (proxySession) opts.session = proxySession
+      request = net.request(opts)
+    } catch (e) { return finish({ status: 0, statusText: 'error', body: `[net.request 失败] ${e.message}`, headers: [], time: 0 }) }
+    const timer = setTimeout(() => {
+      try { request.abort() } catch {}
+      finish({ status: 0, statusText: 'timeout', body: `请求超时（${timeout}ms）\nurl=${url}`, headers: [], time: Date.now() - started })
+    }, timeout)
+    Object.entries(headers || {}).forEach(([k, v]) => { try { request.setHeader(k, v) } catch {} })
+    request.on('response', (response) => {
+      const chunks = []
+      response.on('data', (c) => chunks.push(Buffer.from(c)))
+      response.on('end', () => {
+        clearTimeout(timer)
+        finish({
+          status: response.statusCode,
+          statusText: response.statusMessage || '',
+          headers: Object.entries(response.headers || {}).map(([k, v]) => ({ name: k, value: Array.isArray(v) ? v.join(', ') : String(v) })),
+          body: Buffer.concat(chunks).toString('utf-8'),
+          time: Date.now() - started,
         })
-        response.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[response error] ${err.message}`, headers: [], time: Date.now() - started }) })
       })
-      request.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[net error] ${err.message || err}`, headers: [], time: Date.now() - started }) })
-      try {
-        if (body != null) {
-          if (body instanceof Uint8Array || Buffer.isBuffer(body)) request.write(Buffer.from(body))
-          else request.write(typeof body === 'string' ? body : JSON.stringify(body))
-        }
-        request.end()
-      } catch (e) { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[write error] ${e.message}`, headers: [], time: Date.now() - started }) }
+      response.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[response error] ${err.message}`, headers: [], time: Date.now() - started }) })
     })
+    request.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[net error] ${err.message || err}`, headers: [], time: Date.now() - started }) })
+    try {
+      if (body != null) {
+        if (body instanceof Uint8Array || Buffer.isBuffer(body)) request.write(Buffer.from(body))
+        else request.write(typeof body === 'string' ? body : JSON.stringify(body))
+      }
+      request.end()
+    } catch (e) { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[write error] ${e.message}`, headers: [], time: Date.now() - started }) }
   })
+})
 }
 
 function aesCipherName(kind, keyLen) { return `aes-${keyLen * 8}-${kind}` }

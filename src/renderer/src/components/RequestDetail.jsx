@@ -7,8 +7,8 @@ import HackvertorEditor from './HackvertorEditor';
 
 const { Text } = Typography;
 
-export default function RequestDetail({ 
-  entry, onUpdateRequest, groupConfigs = {}, onSaveGroupConfig 
+export default function RequestDetail({
+  entry, onUpdateRequest, groupConfigs = {}, onSaveGroupConfig
 }) {
   const { message } = App.useApp();
   const { sendToReplay } = useReplay();
@@ -17,17 +17,13 @@ export default function RequestDetail({
   const [localRaw, setLocalRaw] = useState('');
 
   useEffect(() => {
-    if (!entry || !entry.request) {
-      setLocalRaw('');
-      return;
-    }
+    if (!entry || !entry.request) { setLocalRaw(''); return; }
     if (lastEntryUid.current === entry._uid) return;
 
     const req = entry.request;
     let s = `${req.method || 'GET'} ${req.url || ''} HTTP/1.1\n`;
     const seenHeaders = new Set();
     const uniqueHeaders = [];
-    
     const headersArr = req.headers || [];
     for (let i = headersArr.length - 1; i >= 0; i--) {
       const h = headersArr[i];
@@ -38,13 +34,11 @@ export default function RequestDetail({
     }
     uniqueHeaders.forEach(h => { s += `${h.name}: ${h.value}\n`; });
     s += '\n';
-    
     let body = req.postData?.text || '';
     if (body.match(/^[A-Z]+\s+.*?\s+HTTP\/1\.1/)) {
       const firstLineEnd = body.indexOf('\n\n');
       if (firstLineEnd > -1) body = body.slice(firstLineEnd + 2);
     }
-    
     if (body) s += body;
     setLocalRaw(s);
     lastEntryUid.current = entry._uid;
@@ -89,20 +83,20 @@ export default function RequestDetail({
       _id: Date.now().toString(),
       method: req.method || 'GET',
       url: req.url || '',
-      rawText: localRaw
+      rawText: localRaw,
     });
     message.success('已推送至重发台');
   };
 
   const handleSaveRequest = (newText) => {
-    setLocalRaw(newText); 
+    setLocalRaw(newText);
     if (onUpdateRequest && entry) {
       const parsed = parseRawRequest(newText);
       onUpdateRequest(entry._uid, [
         { fieldPath: 'request.method', value: parsed.method },
         { fieldPath: 'request.url', value: parsed.url },
         { fieldPath: 'request.headers', value: parsed.headers },
-        { fieldPath: 'request.postData.text', value: parsed.body }
+        { fieldPath: 'request.postData.text', value: parsed.body },
       ]);
     }
   };
@@ -128,13 +122,13 @@ export default function RequestDetail({
             onChange={setActiveTab}
           />
         </div>
-        
+
         <div style={{ flex: 1, minHeight: 0, padding: 16 }}>
           {activeTab === 'request' ? (
-            <HackvertorEditor 
-              value={localRaw} 
-              onChange={handleSaveRequest} 
-              readOnly={false} 
+            <HackvertorEditor
+              value={localRaw}
+              onChange={handleSaveRequest}
+              readOnly={false}
               groupConfigs={groupConfigs}
               onSaveGroupConfig={onSaveGroupConfig}
             />

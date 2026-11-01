@@ -1,14 +1,16 @@
 // src/renderer/src/components/HackvertorEditor.jsx
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Switch,Flex, Modal, Form, Input, Tag, Space, Typography, App, List, Button, Splitter, Segmented } from 'antd';
-import { 
-  TagOutlined, CodeOutlined, SafetyCertificateOutlined, SearchOutlined, 
-  MenuFoldOutlined, MenuUnfoldOutlined 
+import { Flex, Modal, Form, Input, Tag, Space, Typography, App, List, Button, Splitter, Segmented, Tooltip } from 'antd';
+import {
+  TagOutlined, CodeOutlined, SafetyCertificateOutlined, SearchOutlined,
+  MenuFoldOutlined, MenuUnfoldOutlined
 } from '@ant-design/icons';
 import { processTags, wrapTag } from '../utils/hackTags';
 import { TRANSFORMS, TRANSFORM_GROUPS, applyTransform, getAlgoTagType } from '../utils/strictTransforms';
 import { useScripts } from '../store/scriptStore';
 import { useEnvs } from '../store/envStore';
+import { useAlgorithms } from '../store/algorithmStore';
+import { validateTagText } from '../utils/validateTags';
 
 const { Text } = Typography;
 
@@ -23,20 +25,15 @@ function highlightText(text) {
   const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return escaped.replace(/&lt;@(.*?)&gt;|&lt;\/@(.*?)&gt;/g, (match, open, close) => {
     let color = '#d4b106';
-    if (open) {
-      if (open.startsWith('op:')) color = '#cf1322'; 
-      else if (open.startsWith('enc:')) color = '#389e0d'; 
-      else if (open.startsWith('var:')) color = '#1677ff';
-      else if (open.startsWith('script:')) color = '#fa8c16';
-      else if (open.startsWith('env:')) color = '#eb2f96';
-    } else if (close) {
-      if (close.startsWith('op:')) color = '#cf1322';
-      else if (close.startsWith('enc:')) color = '#389e0d';
-      else if (close.startsWith('var:')) color = '#1677ff';
-      else if (close.startsWith('script:')) color = '#fa8c16';
-      else if (close.startsWith('env:')) color = '#eb2f96';
+    const tag = open || close;
+    if (tag) {
+      if (tag.startsWith('op:')) color = '#cf1322';
+      else if (tag.startsWith('enc:')) color = '#389e0d';
+      else if (tag.startsWith('var:')) color = '#1677ff';
+      else if (tag.startsWith('script:')) color = '#fa8c16';
+      else if (tag.startsWith('env:')) color = '#eb2f96';
     }
-    return `<span style="color: ${color}; ">${match}</span>`;
+    return `<span style="color: ${color};">${match}</span>`;
   });
 }
 
@@ -101,55 +98,63 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
   const { message } = App.useApp();
   const { scripts } = useScripts();
   const { envs } = useEnvs();
-  
+  // 💡 [新增] 拿全局算法配置，用于语法校验
+  const { algorithms } = useAlgorithms();
+
   const [pickerOpen, setPickerOpen] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [selectedText, setSelectedText] = useState({ text: '', start: 0, end: 0 });
   const [paramModal, setParamModal] = useState({ visible: false, action: null });
-  
+
   const [varModal, setVarModal] = useState({ visible: false });
   const [varForm] = Form.useForm();
-  
+
   const [renderedValue, setRenderedValue] = useState('');
   const [renderedJson, setRenderedJson] = useState(null);
   const [isRendering, setIsRendering] = useState(false);
-  const [previewMode, setPreviewMode] = useState('text'); 
-  
+  const [previewMode, setPreviewMode] = useState('text');
+  // 💡 [新增] 语法校验结果
+  const [validationIssues, setValidationIssues] = useState([]);
+
   const [form] = Form.useForm();
   const textareaRef = useRef(null);
   const preRef = useRef(null);
   const pendingSelectRef = useRef(null);
- const userToggledPreviewRef = useRef(false);
+  const userToggledPreviewRef = useRef(false);
+
   useEffect(() => {
-  let canceled = false;
-  setIsRendering(true);
-  processTags(value || '', { scripts, envs, vars: {}, responses: [] })
-    .then((res) => {
-      if (canceled) return;
-      if (res instanceof Uint8Array) {
-        setRenderedValue(`[Binary Data (${res.length} bytes)]`);
-        setRenderedJson(null);
-        setPreviewMode('text');
-        return;
-      }
-      setRenderedValue(res);
-      try {
-        const parsed = JSON.parse(res);
-        setRenderedJson(parsed);
-        // 💡 [修复 #6] 只在用户没手动切换过时自动切到树形
-        if (!userToggledPreviewRef.current && typeof parsed === 'object' && parsed !== null) {
-          setPreviewMode('tree');
+    let canceled = false;
+    setIsRendering(true);
+    processTags(value || '', { scripts, envs, vars: {}, responses: [] })
+      .then((res) => {
+        if (canceled) return;
+        if (res instanceof Uint8Array) {
+           setRenderedValue(`[Binary Data (${res.length} bytes)]`);
+           setRenderedJson(null);
+           setPreviewMode('text');
+           return;
         }
-      } catch {
-        setRenderedJson(null);
-        // 💡 [修复 #6] 解析失败时也尊重用户选择：只有用户没动过才强制回文本
-        if (!userToggledPreviewRef.current) setPreviewMode('text');
-      }
-    })
-    .catch((err) => { if (!canceled) setRenderedValue(`[渲染错误: ${err.message}]`); })
-    .finally(() => { if (!canceled) setIsRendering(false); });
-  return () => { canceled = true; };
-}, [value, scripts, envs]);
+        setRenderedValue(res);
+        try {
+          const parsed = JSON.parse(res);
+          setRenderedJson(parsed);
+          if (!userToggledPreviewRef.current && typeof parsed === 'object' && parsed !== null) setPreviewMode('tree');
+        } catch {
+          setRenderedJson(null);
+          if (!userToggledPreviewRef.current) setPreviewMode('text');
+        }
+      })
+      .catch((err) => { if (!canceled) setRenderedValue(`[渲染错误: ${err.message}]`); })
+      .finally(() => { if (!canceled) setIsRendering(false); });
+    return () => { canceled = true; };
+  }, [value, scripts, envs]);
+
+  // 💡 [新增] 实时语法校验（在 processTags 那个 useEffect 之后）
+  useEffect(() => {
+    const globalAlgos = algorithms.global || {};
+    const issues = validateTagText(value || '', { envs, scripts, globalAlgos });
+    setValidationIssues(issues);
+  }, [value, envs, scripts, algorithms.global]);
 
   useEffect(() => {
     if (!pendingSelectRef.current) return;
@@ -180,7 +185,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
 
   const filteredAlgos = useMemo(() => {
     const kw = searchText.toLowerCase();
-    
+
     let builtin = Object.entries(TRANSFORMS)
       .filter(([k, v]) => (v.label.toLowerCase().includes(kw) || k.toLowerCase().includes(kw)))
       .map(([k, v]) => ({ key: k, type: 'builtin', label: v.label, group: v.group || 'other', tpl: v }));
@@ -193,12 +198,12 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
 
     let customScripts = Object.entries(scripts || {})
       .filter(([k, v]) => (v.label || k).toLowerCase().includes(kw) || k.toLowerCase().includes(kw))
-      .map(([k, v]) => ({ 
-        key: k, 
-        type: 'script', 
-        label: '⚙️ ' + (v.label || k), 
-        group: 'script', 
-        tpl: v 
+      .map(([k, v]) => ({
+        key: k,
+        type: 'script',
+        label: '⚙️ ' + (v.label || k),
+        group: 'script',
+        tpl: v
       }));
 
     return [...builtin, ...customScripts];
@@ -223,23 +228,23 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     if (item.type === 'script') {
       const resultText = selectedText.text;
       const wrapped = wrapTag(`script:${item.key}`, resultText);
-      
+
       const { newText } = commitReplacement(value, selectedText.start, selectedText.end, wrapped);
       const innerStart = selectedText.start + wrapped.indexOf(resultText);
       pendingSelectRef.current = { start: innerStart, end: innerStart + resultText.length };
-      
+
       onChange(newText);
       message.success(`已添加主进程脚本`);
       setPickerOpen(false);
       return;
     }
-    
+
     const tpl = item.tpl;
-    
+
     if (tpl?.configFields?.length) {
       const savedConfig = groupConfigs[item.key];
       const hasAllRequired = tpl.configFields.every(f => !f.required || (savedConfig && savedConfig[f.name]));
-      
+
       if (savedConfig && hasAllRequired) {
         doTransform(item.key, savedConfig);
       } else {
@@ -272,7 +277,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     const { newText } = commitReplacement(value, selectedText.start, selectedText.end, finalReplaceText);
     const innerStart = selectedText.start + finalReplaceText.indexOf(resultText);
     pendingSelectRef.current = { start: innerStart, end: innerStart + resultText.length };
-    
+
     onChange(newText);
     message.success(`已应用算法: ${tpl?.label || algoKey}`);
     setPickerOpen(false);
@@ -306,15 +311,42 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     .json-tree-container::-webkit-scrollbar-thumb { background: #d9d9d9; border-radius: 4px; }
   `;
 
+  const errorCount = validationIssues.filter((x) => x.level === 'error').length;
+  const warnCount = validationIssues.filter((x) => x.level === 'warn').length;
+
   return (
     <Flex vertical style={{ background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden', width: '100%', height: '100%' }}>
       <style>{styles}</style>
-      
+
+      {/* 💡 header：加语法校验状态 */}
       <Flex justify="space-between" align="center" style={{ padding: '4px 8px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
         <Space size={4}>
           <TagOutlined style={{ color: '#1677ff' }} />
           <Text strong style={{ fontSize: 12 }}>Hackvertor 编辑器</Text>
           <Text type="secondary" style={{ fontSize: 11 }}>（选中文字右键选择算法）</Text>
+          {validationIssues.length === 0 ? (
+            <Tag color="success" style={{ marginLeft: 4 }}>✓ 语法正确</Tag>
+          ) : (
+            <Tooltip
+              placement="bottomLeft"
+              title={
+                <div style={{ maxHeight: 260, overflow: 'auto' }}>
+                  {validationIssues.map((iss, i) => (
+                    <div key={i} style={{ marginBottom: 4, color: iss.level === 'error' ? '#ffccc7' : '#fff7c0' }}>
+                      {iss.level === 'error' ? '❌' : '⚠️'} {iss.message}
+                    </div>
+                  ))}
+                </div>
+              }
+            >
+              <Tag
+                color={errorCount > 0 ? 'error' : 'warning'}
+                style={{ marginLeft: 4, cursor: 'help' }}
+              >
+                {errorCount > 0 ? `${errorCount} 错` : ''}{errorCount > 0 && warnCount > 0 ? ' · ' : ''}{warnCount > 0 ? `${warnCount} 警` : ''}
+              </Tag>
+            </Tooltip>
+          )}
         </Space>
         <Space>{isRendering && <Text type="secondary" style={{ fontSize: 11 }}>计算中...</Text>}</Space>
       </Flex>
@@ -350,7 +382,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
                   ...commonEditorStyle,
                   position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
                   width: '100%', height: '100%',
-                  color: 'transparent', caretColor: '#000', background: 'transparent', 
+                  color: 'transparent', caretColor: '#000', background: 'transparent',
                   resize: 'none', overflow: 'auto'
                 }}
                 placeholder={placeholder}
@@ -367,18 +399,18 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
                 <span>最终发送报文（已执行所有加密）</span>
               </Space>
               {renderedJson !== null && (
-                <Segmented 
-                  size="small" 
+                <Segmented
+                  size="small"
                   options={[
-                    { label: '文本', value: 'text', icon: <MenuUnfoldOutlined /> }, 
+                    { label: '文本', value: 'text', icon: <MenuUnfoldOutlined /> },
                     { label: '树形', value: 'tree', icon: <MenuFoldOutlined /> }
-                  ]} 
-                  value={previewMode} 
-                  onChange={setPreviewMode} 
+                  ]}
+                  value={previewMode}
+                  onChange={(v) => { userToggledPreviewRef.current = true; setPreviewMode(v); }}
                 />
               )}
             </Flex>
-            
+
             <div className="json-tree-container" style={{ flex: 1, overflow: 'auto', padding: 12 }}>
               {previewMode === 'tree' && renderedJson !== null ? (
                 <div style={{ fontSize: 13, fontFamily: 'Consolas, Monaco, monospace' }}>
@@ -425,12 +457,12 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
         </div>
       </Modal>
 
-      <Modal 
-        title={<span>配置参数：<Tag color="blue">{TRANSFORMS[paramModal.action?.algoKey]?.label}</Tag></span>} 
-        open={paramModal.visible} 
-        onOk={handleModalOk} 
-        onCancel={() => setParamModal({ visible: false, action: null })} 
-        okText="应用并记忆" 
+      <Modal
+        title={<span>配置参数：<Tag color="blue">{TRANSFORMS[paramModal.action?.algoKey]?.label}</Tag></span>}
+        open={paramModal.visible}
+        onOk={handleModalOk}
+        onCancel={() => setParamModal({ visible: false, action: null })}
+        okText="应用并记忆"
         width={paramModal.action?.algoKey === 'js-expression' ? 800 : 520}
         destroyOnHidden
       >
@@ -451,41 +483,35 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
             </div>
           )}
           {paramModal.action && TRANSFORMS[paramModal.action.algoKey]?.configFields?.map((f) => {
-  // 💡 布尔字段用 Switch，内部仍存 'true' / 'false'，与标签参数格式一致
-  if (f.type === 'boolean') {
-    return (
-      <Form.Item
-        key={f.name}
-        name={f.name}
-        label={f.label}
-        valuePropName="checked"
-        getValueProps={(v) => ({ checked: v === 'true' || v === true })}
-        getValueFromEvent={(checked) => (checked ? 'true' : 'false')}
-      >
-        <Switch size="small" checkedChildren="开" unCheckedChildren="关" />
-      </Form.Item>
-    );
-  }
-  return (
-    <Form.Item
-      key={f.name}
-      name={f.name}
-      label={f.label}
-      rules={[{ required: f.required, message: `请输入 ${f.label}` }]}
-    >
-      {f.multiline ? (
-        <Input.TextArea
-          rows={paramModal.action?.algoKey === 'js-expression' ? 12 : 6}
-          style={{ fontFamily: 'monospace' }}
-          placeholder={f.placeholder || ''}
-          spellCheck={false}
-        />
-      ) : (
-        <Input placeholder={f.placeholder || f.defaultValue || ''} spellCheck={false} />
-      )}
-    </Form.Item>
-  );
-})}
+            if (f.type === 'boolean') {
+              return (
+                <Form.Item
+                  key={f.name}
+                  name={f.name}
+                  label={f.label}
+                  valuePropName="checked"
+                  getValueProps={(v) => ({ checked: v === 'true' || v === true })}
+                  getValueFromEvent={(checked) => (checked ? 'true' : 'false')}
+                >
+                  <Switch size="small" checkedChildren="开" unCheckedChildren="关" />
+                </Form.Item>
+              );
+            }
+            return (
+              <Form.Item key={f.name} name={f.name} label={f.label} rules={[{ required: f.required, message: `请输入 ${f.label}` }]}>
+                {f.multiline ? (
+                  <Input.TextArea
+                    rows={paramModal.action?.algoKey === 'js-expression' ? 12 : 6}
+                    style={{ fontFamily: 'monospace' }}
+                    placeholder={f.placeholder || ''}
+                    spellCheck={false}
+                  />
+                ) : (
+                  <Input placeholder={f.placeholder || f.defaultValue || ''} spellCheck={false} />
+                )}
+              </Form.Item>
+            );
+          })}
         </Form>
       </Modal>
 

@@ -1,9 +1,10 @@
 // src/renderer/src/pages/ProjectDetailPage.jsx
-import React, { useEffect, useMemo, useState, useRef, useCallback} from 'react';
+import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import {
   Button, Card, Col, Row, Flex, Tag, Typography, Empty, Popconfirm,
-  App as AntApp, Modal, Input, Tooltip, List, Checkbox, InputNumber, Space, Drawer, Badge, Segmented, Table, Dropdown, Divider, Breadcrumb, Form, Splitter
+  App as AntApp, Modal, Input, Tooltip, List, Checkbox, InputNumber, Space, Drawer, Badge, Segmented, Table, Dropdown, Divider, Breadcrumb, Form, Splitter, Switch
 } from 'antd';
+import { useSettings } from '../store/settingsStore';
 import {
   ArrowLeftOutlined, DeleteOutlined, FolderOpenOutlined,
   EditOutlined, ReloadOutlined, HolderOutlined, PlayCircleOutlined, StopOutlined, FileTextOutlined,
@@ -14,10 +15,12 @@ import {
 import { useProjects } from '../store/projectStore';
 import { useScripts } from '../store/scriptStore';
 import { useEnvs } from '../store/envStore';
+import { useAlgorithms } from '../store/algorithmStore';  // 💡 [新增]
 import RequestWorkbench from '../components/RequestWorkbench';
 import usePersistentState from '../hooks/usePersistentState';
 import { processTags, updateOpTags, extractVarsOnly } from '../utils/hackTags';
 import { TRANSFORMS } from '../utils/strictTransforms';
+import { validateTagText } from '../utils/validateTags';   // 💡 [新增]
 
 const { Text, Title } = Typography;
 
@@ -29,30 +32,33 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     renameGroup, deleteGroup, reorderGroups, reorderGroupRequests,
     updateRequestFields, applyResponse, resetGroupRequests, resetSelectedRequests,
     updateGroupConfig, removeGroupConfig, updateGroupProxy, updateSubGroup, createGroup,
-    // 💡 [修复] 新增：获取项目最新快照
     getProjectSnapshot,
   } = useProjects();
   const { scripts } = useScripts();
   const { envs } = useEnvs();
+  const { algorithms } = useAlgorithms();   // 💡 [新增]
+  const { settingsRef } = useSettings();
   const { message } = AntApp.useApp();
 
   const [activeGroupId, setActiveGroupId] = usePersistentState(`ui-proj-${projectId}-group`, null);
   const [activeLevel, setActiveLevel] = useState('main');
-  
+
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [intervalSec, setIntervalSec] = useState(0);
-  
+
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
-  
+
   const stopAfterRoundRef = useRef(false);
   const pauseFlagRef = useRef(false);
-  
+  const intervalSecRef = useRef(intervalSec);   // 💡 intervalSec 用 ref 保证最新
+  useEffect(() => { intervalSecRef.current = intervalSec }, [intervalSec]);
+
   const [execLogs, setExecLogs] = useState([]);
-  
+
   const [monitorModalOpen, setMonitorModalOpen] = useState(false);
-  const [execCurrentLevel, setExecCurrentLevel] = useState('-'); 
+  const [execCurrentLevel, setExecCurrentLevel] = useState('-');
 
   const [subConfigDrawerOpen, setSubConfigDrawerOpen] = useState(false);
   const [algoConfigDrawerOpen, setAlgoConfigDrawerOpen] = useState(false);
@@ -71,6 +77,9 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [selectedExportReqs, setSelectedExportReqs] = useState([]);
   const [runJsModalOpen, setRunJsModalOpen] = useState(false);
+
+  // 💡 [新增] 执行前预检 Modal
+  const [preflightModal, setPreflightModal] = useState({ open: false, issues: [], pendingAction: null });
 
   const pendingSubPayloadRef = useRef(null);
 
@@ -103,11 +112,11 @@ export default function ProjectDetailPage({ projectId, onBack }) {
 
   const handleExportProject = () => {
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(project, null, 2));
-    const a = document.createElement('a'); 
-    a.setAttribute("href", dataStr); 
+    const a = document.createElement('a');
+    a.setAttribute("href", dataStr);
     a.setAttribute("download", `${project.name}_export.json`);
-    document.body.appendChild(a); 
-    a.click(); 
+    document.body.appendChild(a);
+    a.click();
     a.remove();
     message.success('项目备份已下载');
   };
@@ -121,8 +130,8 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const handleSaveUserInfo = async () => {
     if (selectedExportReqs.length === 0) return message.warning('请选择要导出的请求');
     const folderName = `${project.name}_${activeGroup.name}`.replace(/[<>:"/\\|?*]/g, '_');
-    const dataToExport = selectedExportReqs.map(uid => {
-      const req = activeGroup.requests.find(r => r._uid === uid);
+    const dataToExport = selectedExportReqs.map(u => {
+      const req = activeGroup.requests.find(r => r._uid === u);
       return { url: req.request.url, method: req.request.method, body: req.request.postData?.text, response: req.response?.content?.text };
     });
     const r = await window.electronAPI?.workarea?.writeJson({ folderName, fileName: 'userInfo.json', data: dataToExport });
@@ -161,11 +170,11 @@ export default function ProjectDetailPage({ projectId, onBack }) {
 
     const handleDragStart = (e, idx) => { setDraggingIndex(idx); e.dataTransfer.effectAllowed = 'move'; };
     const handleDragOver = (e, idx) => { e.preventDefault(); if (dropIndex !== idx) setDropIndex(idx); };
-    const handleDrop = (e, idx) => { 
-      e.preventDefault(); 
-      if (draggingIndex != null && draggingIndex !== idx) reorderGroups(projectId, draggingIndex, idx); 
-      setDraggingIndex(null); 
-      setDropIndex(null); 
+    const handleDrop = (e, idx) => {
+      e.preventDefault();
+      if (draggingIndex != null && draggingIndex !== idx) reorderGroups(projectId, draggingIndex, idx);
+      setDraggingIndex(null);
+      setDropIndex(null);
     };
 
     return (
@@ -187,10 +196,10 @@ export default function ProjectDetailPage({ projectId, onBack }) {
 
         <Row gutter={[24, 24]}>
           <Col xs={24} sm={12} md={8} xl={6}>
-            <div 
+            <div
               onClick={() => setNewGroupModalOpen(true)}
-              style={{ 
-                height: 140, border: '2px dashed #d9d9d9', borderRadius: 12, 
+              style={{
+                height: 140, border: '2px dashed #d9d9d9', borderRadius: 12,
                 display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                 cursor: 'pointer', background: 'transparent', transition: 'all 0.3s'
               }}
@@ -216,9 +225,9 @@ export default function ProjectDetailPage({ projectId, onBack }) {
                   borderRadius: 12, height: '100%', transition: 'all 0.2s'
                 }}
               >
-                <Card 
-                  hoverable 
-                  onClick={() => setActiveGroupId(g.id)} 
+                <Card
+                  hoverable
+                  onClick={() => setActiveGroupId(g.id)}
                   style={{ height: 140, borderRadius: 12, border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}
                   styles={{ body: { padding: 20, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' } }}
                 >
@@ -236,7 +245,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
                       <Button size="small" type="text" icon={<MoreOutlined />} onClick={(e) => e.stopPropagation()} />
                     </Dropdown>
                   </Flex>
-                  
+
                   <Flex justify="space-between" align="flex-end">
                     <Space size={4}>
                       <Tag color="blue">主 {g.requests.length}</Tag>
@@ -264,35 +273,35 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const isSubMode = activeLevel === 'sub';
   const currentReqs = isSubMode ? (activeGroup.subGroup?.requests || []) : activeGroup.requests;
   const subConfig = activeGroup.subGroup || { zones: [], successKeyword: '"code":200', maxRetries: 3, judgeVar: 'level', proxy: '' };
-  
-  const currentConfigs = isSubMode 
-    ? (activeGroup.configs?.sub || {}) 
+
+  const currentConfigs = isSubMode
+    ? (activeGroup.configs?.sub || {})
     : (activeGroup.configs?.main || (activeGroup.configs?.sub ? {} : activeGroup.configs) || {});
 
   const mainProxy = activeGroup.proxy || '';
   const currentProxy = isSubMode && subConfig.proxy ? subConfig.proxy : mainProxy;
 
-  // 💡 [修复 #4] 直接把 updater 交给 store，内部基于最新 state 计算，
-// 避免用渲染期快照 currentReqs 覆盖执行引擎已更新但尚未渲染的结果。
-const setEntries = (updater) => {
-  if (!isSubMode) updateGroupRequests(projectId, activeGroup.id, updater);
-  else updateSubGroupRequests(projectId, activeGroup.id, updater);
-};
- // 💡 [修复 #3] saveSubConfig 直接传 patch，store 做浅合并；不再依赖外部旧 subConfig
-const saveSubConfig = (patch) => updateSubGroup(projectId, activeGroup.id, patch);
-// 💡 [修复 #3] 用函数式 patch 基于 store 内最新 zones，避免覆盖执行引擎的 updates
-const handleAddZone = () => updateSubGroup(projectId, activeGroup.id, (prev) => ({
-  zones: [...(prev.zones || []), { id: uid(), min: 0, max: 0, status: 'none' }],
-}));
-const handleUpdateZone = (id, field, val) => updateSubGroup(projectId, activeGroup.id, (prev) => ({
-  zones: (prev.zones || []).map(z => (z.id === id ? { ...z, [field]: val } : z)),
-}));
-const handleDeleteZone = (id) => updateSubGroup(projectId, activeGroup.id, (prev) => ({
-  zones: (prev.zones || []).filter(z => z.id !== id),
-}));
-const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, (prev) => ({
-  zones: (prev.zones || []).map(z => (z.id === id ? { ...z, status: 'none' } : z)),
-}));
+  // 💡 [修复 #4] 直接把 updater 交给 store
+  const setEntries = (updater) => {
+    if (!isSubMode) updateGroupRequests(projectId, activeGroup.id, updater);
+    else updateSubGroupRequests(projectId, activeGroup.id, updater);
+  };
+
+  // 💡 [修复 #3] saveSubConfig 传 patch；各区操作走函数式
+  const saveSubConfig = (patch) => updateSubGroup(projectId, activeGroup.id, patch);
+  const handleAddZone = () => updateSubGroup(projectId, activeGroup.id, (prev) => ({
+    zones: [...(prev.zones || []), { id: uid(), min: 0, max: 0, status: 'none' }],
+  }));
+  const handleUpdateZone = (id, field, val) => updateSubGroup(projectId, activeGroup.id, (prev) => ({
+    zones: (prev.zones || []).map(z => (z.id === id ? { ...z, [field]: val } : z)),
+  }));
+  const handleDeleteZone = (id) => updateSubGroup(projectId, activeGroup.id, (prev) => ({
+    zones: (prev.zones || []).filter(z => z.id !== id),
+  }));
+  const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, (prev) => ({
+    zones: (prev.zones || []).map(z => (z.id === id ? { ...z, status: 'none' } : z)),
+  }));
+
   const processSingleEntry = async (entry, ctx, source = 'main') => {
     const uid = entry._uid;
     const req = entry.request || {};
@@ -312,7 +321,7 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
       let updatedUrl = await updateOpTags(rawUrl, ctx);
       let updatedBody = rawBody ? await updateOpTags(rawBody, ctx) : undefined;
       let updatedHeaders = [...rawHeaders];
-      
+
       for (let i = 0; i < updatedHeaders.length; i++) {
         if (updatedHeaders[i].value) {
           updatedHeaders[i] = { ...updatedHeaders[i], value: await updateOpTags(updatedHeaders[i].value, ctx) };
@@ -324,14 +333,14 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
       updatedHeaders.forEach((h, i) => {
         if (h.value !== rawHeaders[i].value) updates.push({ fieldPath: `request.headers.${i}.value`, value: h.value });
       });
-      
+
       if (updates.length > 0) {
         updateRequestFields(projectId, activeGroup.id, uid, updates, source === 'sub' ? 'sub' : 'main');
       }
 
       let finalUrl = await processTags(updatedUrl, ctx);
       let finalBody = updatedBody ? await processTags(updatedBody, ctx) : undefined;
-      
+
       let finalHeaders = {};
       for (const h of updatedHeaders) {
         if (h.name && !['host', 'content-length', 'connection'].includes(h.name.toLowerCase())) {
@@ -339,16 +348,31 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
         }
       }
 
-      const payload = { url: finalUrl, method, headers: finalHeaders, body: finalBody, proxy: currentProxy || undefined };
-      const res = await window.electronAPI.httpRequest(payload);
+      // 💡 [改] 从全局设置读取超时/重试/间隔
+const s = settingsRef.current;
+const payload = {
+  url: finalUrl, method, headers: finalHeaders, body: finalBody,
+  proxy: currentProxy || undefined,
+  timeoutMs: s.timeoutMs,
+};
+const maxRetries = Number(s.retries) || 0;
+let res = null;
+for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  res = await window.electronAPI.httpRequest(payload);
+  if (res && res.status > 0) break;
+  if (attempt < maxRetries) {
+    setExecLogs(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: finalUrl, method, status: 'RETRY', statusText: `第 ${attempt + 1} 次失败，即将重试`, body: '', timeCost: 0, source }, ...prev].slice(0, 150));
+    await new Promise(r => setTimeout(r, s.retryDelayMs));
+  }
+}
 
       ctx.responses.push({ status: res.status, headers: res.headers, body: res.body });
 
-      setExecLogs(prev => [{ 
-        id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: finalUrl, method, 
-        status: res.status, statusText: res.statusText, body: res.body || '', timeCost: res.time, source 
+      setExecLogs(prev => [{
+        id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: finalUrl, method,
+        status: res.status, statusText: res.statusText, body: res.body || '', timeCost: res.time, source
       }, ...prev].slice(0, 150));
-      
+
       applyResponse(projectId, activeGroup.id, uid, {
         status: res.status,
         statusText: res.statusText,
@@ -374,7 +398,7 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
     setExecLogs([]);
     setExecCurrentLevel('-');
     pendingSubPayloadRef.current = null;
-    
+
     message.success(isSoloSub ? `开始单独调试副组` : `开始执行主组流程`);
 
     const checkPause = async () => {
@@ -384,8 +408,6 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
     };
 
     while (!stopAfterRoundRef.current) {
-      // 💡 [修复] 每轮从 store 重新拉最新快照，让 op 标签累积生效（5→6→7→8）
-      // 若用户在执行期间删除了当前组，主动终止
       const fresh = getProjectSnapshot(projectId);
       const freshGroup = fresh?.groups?.find((g) => g.id === activeGroup.id);
       if (!freshGroup) {
@@ -394,107 +416,104 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
       }
       const mainReqs = freshGroup.requests || [];
       const subReqsData = freshGroup.subGroup?.requests || [];
+      const freshSubConfig = freshGroup.subGroup || {
+        zones: [], successKeyword: '"code":200', maxRetries: 3, judgeVar: 'level', proxy: '',
+      };
 
       const groupCtx = { vars: {}, responses: [], scripts, envs };
-      
+
       if (!isSoloSub) {
         for (let i = 0; i < mainReqs.length; i++) {
-          await checkPause(); 
+          await checkPause();
           await processSingleEntry(mainReqs[i], groupCtx, 'main');
-          await new Promise(r => setTimeout(r, 50));
+          await new Promise(r => setTimeout(r, settingsRef.current.requestDelayMs));
         }
       }
 
-        // 💡 [修复 #3] 每轮基于刚读的快照计算 subConfig，避免闭包旧值
-  const freshSubConfig = freshGroup.subGroup || {
-    zones: [], successKeyword: '"code":200', maxRetries: 3, judgeVar: 'level', proxy: '',
-  };
+      if (subReqsData.length > 0) {
+        await checkPause();
 
-  if (subReqsData.length > 0) {
-    await checkPause();
+        const judgeVarName = freshSubConfig.judgeVar || 'level';
+        const judgeVal = isSoloSub ? 999999 : groupCtx.vars[judgeVarName];
 
-    const judgeVarName = freshSubConfig.judgeVar || 'level';
-    const judgeVal = isSoloSub ? 999999 : groupCtx.vars[judgeVarName];
+        if (judgeVal !== undefined) {
+          const currLevel = Number(judgeVal);
+          setExecCurrentLevel(currLevel);
 
-    if (judgeVal !== undefined) {
-      const currLevel = Number(judgeVal);
-      setExecCurrentLevel(currLevel);
+          const matchedZone = (freshSubConfig.zones || []).find(z => currLevel >= z.min && currLevel < z.max);
 
-      const matchedZone = (freshSubConfig.zones || []).find(z => currLevel >= z.min && currLevel < z.max);
+          if (isSoloSub || (matchedZone && matchedZone.status === 'none')) {
+            let lastSubResponseText = '';
+            let currentRetryCount = 1;
 
-      if (isSoloSub || (matchedZone && matchedZone.status === 'none')) {
-        let lastSubResponseText = '';
-        let currentRetryCount = 1;
+            if (pendingSubPayloadRef.current && pendingSubPayloadRef.current.zoneId === (isSoloSub ? 'solo' : matchedZone.id)) {
+              currentRetryCount = pendingSubPayloadRef.current.retryCount;
+              message.warning(`[副组] 原包重试中 (${currentRetryCount}/${freshSubConfig.maxRetries})...`);
 
-        if (pendingSubPayloadRef.current && pendingSubPayloadRef.current.zoneId === (isSoloSub ? 'solo' : matchedZone.id)) {
-          currentRetryCount = pendingSubPayloadRef.current.retryCount;
-          message.warning(`[副组] 原包重试中 (${currentRetryCount}/${freshSubConfig.maxRetries})...`);
+              for (const p of pendingSubPayloadRef.current.payloads) {
+                await checkPause();
+                const res = await window.electronAPI.httpRequest(p);
+                if (res && res.body) lastSubResponseText = res.body;
+                setExecLogs(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: p.url, method: p.method, status: res.status, statusText: res.statusText, body: res.body || '', timeCost: res.time, source: 'sub-retry' }, ...prev].slice(0, 150));
+                await new Promise(r => setTimeout(r, settingsRef.current.requestDelayMs));
+              }
+            } else {
+              message.info(`[副组] 正常执行中...`);
+              const subCtx = { vars: groupCtx.vars, responses: [], scripts, envs };
+              let cachedPayloads = [];
 
-          for (const p of pendingSubPayloadRef.current.payloads) {
-            await checkPause();
-            const res = await window.electronAPI.httpRequest(p);
-            if (res && res.body) lastSubResponseText = res.body;
-            setExecLogs(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: p.url, method: p.method, status: res.status, statusText: res.statusText, body: res.body || '', timeCost: res.time, source: 'sub-retry' }, ...prev].slice(0, 150));
-            await new Promise(r => setTimeout(r, 100));
-          }
-        } else {
-          message.info(`[副组] 正常执行中...`);
-          const subCtx = { vars: groupCtx.vars, responses: [], scripts, envs };
-          let cachedPayloads = [];
-
-          for (let j = 0; j < subReqsData.length; j++) {
-            await checkPause();
-            const res = await processSingleEntry(subReqsData[j], subCtx, 'sub');
-            if (res && res._payload) {
-              cachedPayloads.push(res._payload);
-              if (res.body) lastSubResponseText = res.body;
+              for (let j = 0; j < subReqsData.length; j++) {
+                await checkPause();
+                const res = await processSingleEntry(subReqsData[j], subCtx, 'sub');
+                if (res && res._payload) {
+                  cachedPayloads.push(res._payload);
+                  if (res.body) lastSubResponseText = res.body;
+                }
+                await new Promise(r => setTimeout(r, settingsRef.current.requestDelayMs));
+              }
+              pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: cachedPayloads, retryCount: 1 };
             }
-            await new Promise(r => setTimeout(r, 100));
-          }
-          pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: cachedPayloads, retryCount: 1 };
-        }
 
-        if (lastSubResponseText.includes(freshSubConfig.successKeyword)) {
-          message.success(`[副组] 响应成功！`);
-          if (!isSubMode && matchedZone) {
-            // 💡 [修复 #3] 函数式 patch，基于 store 内最新 zones
-            updateSubGroup(projectId, activeGroup.id, (prev) => ({
-              zones: (prev.zones || []).map(z => (z.id === matchedZone.id ? { ...z, status: 'success' } : z)),
-            }));
-          }
-          pendingSubPayloadRef.current = null;
-        } else {
-          if (currentRetryCount >= (freshSubConfig.maxRetries || 3)) {
-            message.error(`[副组] 达到最大重试次数，标记为死局！`);
-            if (!isSubMode && matchedZone) {
-              updateSubGroup(projectId, activeGroup.id, (prev) => ({
-                zones: (prev.zones || []).map(z => (z.id === matchedZone.id ? { ...z, status: 'failed' } : z)),
-              }));
+            if (lastSubResponseText.includes(freshSubConfig.successKeyword)) {
+              message.success(`[副组] 响应成功！`);
+              if (!isSubMode && matchedZone) {
+                updateSubGroup(projectId, activeGroup.id, (prev) => ({
+                  zones: (prev.zones || []).map(z => (z.id === matchedZone.id ? { ...z, status: 'success' } : z)),
+                }));
+              }
+              pendingSubPayloadRef.current = null;
+            } else {
+              if (currentRetryCount >= (freshSubConfig.maxRetries || 3)) {
+                message.error(`[副组] 达到最大重试次数，标记为死局！`);
+                if (!isSubMode && matchedZone) {
+                  updateSubGroup(projectId, activeGroup.id, (prev) => ({
+                    zones: (prev.zones || []).map(z => (z.id === matchedZone.id ? { ...z, status: 'failed' } : z)),
+                  }));
+                }
+                pendingSubPayloadRef.current = null;
+              } else {
+                message.warning(`[副组] 失败，等待主循环原包重试...`);
+                pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: pendingSubPayloadRef.current.payloads, retryCount: currentRetryCount + 1 };
+              }
             }
-            pendingSubPayloadRef.current = null;
-          } else {
-            message.warning(`[副组] 失败，等待主循环原包重试...`);
-            pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: pendingSubPayloadRef.current.payloads, retryCount: currentRetryCount + 1 };
           }
         }
       }
-    }
-  }
 
       if (stopAfterRoundRef.current) {
         message.success('当前组已完整执行完毕，任务平滑停止。');
         break;
       }
 
-      if (isSoloSub || !intervalSec || intervalSec <= 0) break;
-      
-      let waitTime = intervalSec * 1000;
+      if (isSoloSub || !intervalSecRef.current || intervalSecRef.current <= 0) break;
+
+      let waitTime = intervalSecRef.current * 1000;
       while (waitTime > 0 && !stopAfterRoundRef.current) {
-        await new Promise(r => setTimeout(r, 500));
-        if (!pauseFlagRef.current) waitTime -= 500;
+        await new Promise(r => setTimeout(r, settingsRef.current.requestDelayMs));
+        if (!pauseFlagRef.current) waitTime -= settingsRef.current.requestDelayMs;
       }
     }
-    
+
     setIsRunning(false);
     setIsStopping(false);
     setIsPaused(false);
@@ -503,6 +522,44 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
   const handlePause = () => { pauseFlagRef.current = true; setIsPaused(true); message.warning('已暂停执行'); };
   const handleResume = () => { pauseFlagRef.current = false; setIsPaused(false); message.success('已继续执行'); };
   const handleStop = () => { stopAfterRoundRef.current = true; setIsStopping(true); message.warning('已发出停止指令，正在等待当前组执行完毕...'); };
+
+  // 💡 [新增] 执行前预检
+  const preflightCheck = () => {
+    const globalAlgos = {};
+    for (const [k, v] of Object.entries(algorithms?.global || {})) {
+      if (v?.config) globalAlgos[k] = v;
+    }
+    const issues = [];
+    const scanRequest = (entry) => {
+      const req = entry.request || {};
+      const texts = [
+        { field: 'URL', text: req.url || '' },
+        { field: 'Body', text: req.postData?.text || '' },
+        ...(req.headers || []).map((h, i) => ({ field: `Header[${h.name || i}]`, text: h.value || '' })),
+      ];
+      for (const { field, text } of texts) {
+        if (!text) continue;
+        const errs = validateTagText(text, { envs, scripts, globalAlgos });
+        errs.forEach((e) => {
+          issues.push({
+            level: e.level,
+            request: `${req.method || 'GET'} ${(req.url || '').slice(0, 60)}`,
+            field,
+            message: e.message,
+          });
+        });
+      }
+    };
+    for (const e of activeGroup.requests) scanRequest(e);
+    for (const e of (activeGroup.subGroup?.requests || [])) scanRequest(e);
+    return issues;
+  };
+
+  const handleStartWithPreflight = (action) => {
+    const issues = preflightCheck();
+    if (issues.length === 0) { action(); return; }
+    setPreflightModal({ open: true, issues, pendingAction: action });
+  };
 
   const moreMenuItems = [
     { key: 'bind', label: `绑定/切换工作区 (${basePath ? '已绑定' : '未绑定'})`, icon: <FolderOutlined />, onClick: handleBindPath },
@@ -519,29 +576,29 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
 
   return (
     <Flex vertical style={{ height: '100%', background: '#fff' }}>
-      <div style={{ 
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', 
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '8px 16px', background: '#fff',
         borderBottom: '1px solid #e5e7eb', zIndex: 10
       }}>
         <Flex align="center" gap={12}>
           <Button size="small" shape="circle" icon={<ArrowLeftOutlined />} onClick={() => setActiveGroupId(null)} />
-          
+
           <Breadcrumb style={{ margin: 0 }} items={[
             { title: <Text type="secondary" style={{ fontSize: 12 }}>{project.name}</Text> },
             { title: <Text strong style={{ fontSize: 12 }}>{activeGroup.name}</Text> }
           ]} />
 
           <Divider orientation="vertical" style={{ height: 16, margin: '0 4px' }} />
-          
-          <Segmented 
+
+          <Segmented
             size="small"
             options={[
-              { label: `主组 (${activeGroup.requests.length})`, value: 'main' }, 
+              { label: `主组 (${activeGroup.requests.length})`, value: 'main' },
               { label: `副组 (${activeGroup.subGroup?.requests?.length || 0})`, value: 'sub' }
-            ]} 
-            value={activeLevel} 
-            onChange={setActiveLevel} 
+            ]}
+            value={activeLevel}
+            onChange={setActiveLevel}
           />
         </Flex>
 
@@ -552,18 +609,18 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
             </Button>
           </Tooltip>
 
-          <Button 
+          <Button
             size="small"
-            icon={<SettingOutlined />} 
+            icon={<SettingOutlined />}
             onClick={() => setSubConfigDrawerOpen(true)}
-            style={{ 
-              background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)', 
-              color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(118,75,162,0.3)' 
+            style={{
+              background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)',
+              color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(118,75,162,0.3)'
             }}
           >
             阶梯
           </Button>
-          
+
           {isRunning ? (
             <Space>
               <Button size="small" icon={isPaused ? <CaretRightOutlined /> : <PauseCircleOutlined />} onClick={isPaused ? handleResume : handlePause} disabled={isStopping}>
@@ -574,24 +631,25 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
               </Button>
             </Space>
           ) : (
-            <Button 
+            <Button
               size="small"
-              type="primary" 
-              icon={<PlayCircleOutlined />} 
-              onClick={() => { 
-                setMonitorModalOpen(true); 
-                if (isSubMode) executeGroup(true); 
-                else setRunModalOpen(true); 
-              }}
-              style={{ 
-                background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)', 
-                color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(16,185,129,0.3)' 
+              type="primary"
+              icon={<PlayCircleOutlined />}
+              // 💡 [新增] 走预检
+              onClick={() => handleStartWithPreflight(() => {
+                setMonitorModalOpen(true);
+                if (isSubMode) executeGroup(true);
+                else setRunModalOpen(true);
+              })}
+              style={{
+                background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
+                color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(16,185,129,0.3)'
               }}
             >
               {isSubMode ? '单测副组' : '启动主组'}
             </Button>
           )}
-          
+
           <Dropdown menu={{ items: moreMenuItems }} placement="bottomRight">
             <Button type="text" size="small" shape="circle" icon={<MoreOutlined />} />
           </Dropdown>
@@ -675,7 +733,7 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
                 {execLogs.length === 0 ? (
                   <Text style={{ color: '#666' }}>等待响应...</Text>
                 ) : (
-                  <List 
+                  <List
                     split={false}
                     dataSource={execLogs}
                     renderItem={(item) => (
@@ -685,7 +743,7 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
                           {item.source === 'main' && <Tag color="blue" style={{ margin: 0 }}>主组</Tag>}
                           {item.source === 'sub' && <Tag color="purple" style={{ margin: 0 }}>副组</Tag>}
                           {item.source === 'sub-retry' && <Tag color="orange" style={{ margin: 0 }}>重试</Tag>}
-                          <Text style={{ color: item.status >= 400 || item.status === 'ERR' ? '#f48771' : '#89d185', fontWeight: 'bold' }}>
+                          <Text style={{ color: item.status >= 400 || item.status === 'ERR' || item.status === 'RETRY' ? '#f48771' : '#89d185', fontWeight: 'bold' }}>
                             {item.status}
                           </Text>
                           <Text style={{ color: '#569cd6' }}>{item.method}</Text>
@@ -707,10 +765,10 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
         </Splitter>
       </Modal>
 
-      <Drawer 
-        title={<Space><KeyOutlined /> {isSubMode ? '副组' : '主组'} 算法密钥配置</Space>} 
-        placement="right" width={450} 
-        onClose={() => setAlgoConfigDrawerOpen(false)} 
+      <Drawer
+        title={<Space><KeyOutlined /> {isSubMode ? '副组' : '主组'} 算法密钥配置</Space>}
+        placement="right" width={450}
+        onClose={() => setAlgoConfigDrawerOpen(false)}
         open={algoConfigDrawerOpen}
       >
         {Object.keys(currentConfigs).length === 0 ? (
@@ -721,10 +779,10 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
               const tpl = TRANSFORMS[algoKey];
               if (!tpl) return null;
               return (
-                <Card 
-                  key={algoKey} 
-                  size="small" 
-                  title={<Text strong>{tpl.label}</Text>} 
+                <Card
+                  key={algoKey}
+                  size="small"
+                  title={<Text strong>{tpl.label}</Text>}
                   extra={
                     <Popconfirm title="删除此密钥配置？" onConfirm={() => removeGroupConfig(projectId, activeGroup.id, activeLevel, algoKey)}>
                       <Button size="small" danger type="text" icon={<DeleteOutlined />}>清除</Button>
@@ -734,11 +792,24 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
                   <Form layout="vertical" size="small">
                     {tpl.configFields?.map(f => (
                       <Form.Item key={f.name} label={f.label} style={{ marginBottom: 8 }}>
-                        <Input 
-                          value={cfg[f.name]} 
-                          onChange={e => updateGroupConfig(projectId, activeGroup.id, activeLevel, algoKey, { ...cfg, [f.name]: e.target.value })} 
-                          placeholder={f.defaultValue || ''}
-                        />
+                        {f.type === 'boolean' ? (
+                          <Switch
+                            size="small"
+                            checked={cfg[f.name] === 'true' || cfg[f.name] === true}
+                            onChange={(checked) =>
+                              updateGroupConfig(projectId, activeGroup.id, activeLevel, algoKey, {
+                                ...cfg,
+                                [f.name]: checked ? 'true' : 'false',
+                              })
+                            }
+                          />
+                        ) : (
+                          <Input
+                            value={cfg[f.name]}
+                            onChange={e => updateGroupConfig(projectId, activeGroup.id, activeLevel, algoKey, { ...cfg, [f.name]: e.target.value })}
+                            placeholder={f.defaultValue || ''}
+                          />
+                        )}
                       </Form.Item>
                     ))}
                   </Form>
@@ -776,10 +847,10 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
           </Card>
 
           <Card size="small" variant="borderless" title="阶梯区间管理" extra={<Button size="small" icon={<PlusOutlined />} onClick={handleAddZone}>添加区间</Button>}>
-            <Table 
-              size="small" 
-              pagination={false} 
-              dataSource={subConfig.zones || []} 
+            <Table
+              size="small"
+              pagination={false}
+              dataSource={subConfig.zones || []}
               rowKey="id"
               scroll={{ y: 300 }}
               columns={[
@@ -828,6 +899,50 @@ const handleResetZoneStatus = (id) => updateSubGroup(projectId, activeGroup.id, 
             }}>{item.request.method} {item.request.url.slice(0, 50)}...</Checkbox>
           </List.Item>
         )} />
+      </Modal>
+
+      {/* 💡 [新增] 执行前预检 Modal —— 位于所有原有 Modal 之后、Flex 结束标签之前 */}
+      <Modal
+        title="执行前预检"
+        open={preflightModal.open}
+        onCancel={() => setPreflightModal({ open: false, issues: [], pendingAction: null })}
+        width={700}
+        footer={[
+          <Button key="cancel" onClick={() => setPreflightModal({ open: false, issues: [], pendingAction: null })}>中止</Button>,
+          <Button key="continue" type="primary" danger onClick={() => {
+            const act = preflightModal.pendingAction;
+            setPreflightModal({ open: false, issues: [], pendingAction: null });
+            act?.();
+          }}>忽略并继续</Button>,
+        ]}
+      >
+        <div style={{ marginTop: 8 }}>
+          <Text type="secondary">
+            发现 {preflightModal.issues.length} 个问题（
+            <Text style={{ color: '#ff4d4f' }}>{preflightModal.issues.filter((i) => i.level === 'error').length} 错误</Text>
+            {' · '}
+            <Text style={{ color: '#faad14' }}>{preflightModal.issues.filter((i) => i.level === 'warn').length} 警告</Text>
+            ）：
+          </Text>
+          <div style={{ maxHeight: 400, overflow: 'auto', marginTop: 8 }}>
+            <List
+              size="small"
+              dataSource={preflightModal.issues}
+              renderItem={(iss) => (
+                <List.Item>
+                  <Flex vertical gap={2} style={{ width: '100%' }}>
+                    <Flex gap={6} align="center">
+                      <Tag color={iss.level === 'error' ? 'error' : 'warning'} style={{ margin: 0 }}>{iss.level === 'error' ? '错误' : '警告'}</Tag>
+                      <Text style={{ fontSize: 12, fontFamily: 'monospace' }}>{iss.field}</Text>
+                      <Text type="secondary" style={{ fontSize: 11 }} ellipsis>{iss.request}</Text>
+                    </Flex>
+                    <Text style={{ fontSize: 12 }}>{iss.message}</Text>
+                  </Flex>
+                </List.Item>
+              )}
+            />
+          </div>
+        </div>
       </Modal>
     </Flex>
   );
