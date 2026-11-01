@@ -1,43 +1,42 @@
 // src/renderer/src/pages/ProjectDetailPage.jsx
-import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Button, Card, Col, Row, Flex, Tag, Typography, Empty, Popconfirm,
-  App as AntApp, Modal, Input, Tooltip, List, Checkbox, InputNumber, Space, Drawer, Badge, Segmented, Table, Dropdown, Divider, Breadcrumb, Form, Splitter, Switch
+  App as AntApp, Modal, Input, Tooltip, List, Checkbox, InputNumber, Space, Drawer,
+  Badge, Segmented, Table, Dropdown, Divider, Breadcrumb, Form, Splitter, Switch,
 } from 'antd';
-import { useSettings } from '../store/settingsStore';
 import {
   ArrowLeftOutlined, DeleteOutlined, FolderOpenOutlined,
-  EditOutlined, ReloadOutlined, HolderOutlined, PlayCircleOutlined, StopOutlined, FileTextOutlined,
+  EditOutlined, ReloadOutlined, HolderOutlined, PlayCircleOutlined, StopOutlined,
   DownloadOutlined, GlobalOutlined, PlusOutlined, SettingOutlined,
   MoreOutlined, FolderOutlined, SaveOutlined, KeyOutlined,
-  PauseCircleOutlined, CaretRightOutlined, LoadingOutlined
+  PauseCircleOutlined, CaretRightOutlined, LoadingOutlined, RocketOutlined,
 } from '@ant-design/icons';
 import { useProjects } from '../store/projectStore';
 import { useScripts } from '../store/scriptStore';
 import { useEnvs } from '../store/envStore';
-import { useAlgorithms } from '../store/algorithmStore';  // 💡 [新增]
+import { useAlgorithms } from '../store/algorithmStore';
+import { useExecution } from '../store/executionStore';
 import RequestWorkbench from '../components/RequestWorkbench';
 import usePersistentState from '../hooks/usePersistentState';
-import { processTags, updateOpTags, extractVarsOnly } from '../utils/hackTags';
 import { TRANSFORMS } from '../utils/strictTransforms';
-import { validateTagText } from '../utils/validateTags';   // 💡 [新增]
+import { validateTagText } from '../utils/validateTags';
 
 const { Text, Title } = Typography;
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).substring(2);
 
-export default function ProjectDetailPage({ projectId, onBack }) {
+export default function ProjectDetailPage({ projectId, onBack, onOpenProjectSettings }) {
   const {
     projects, deleteProject, updateGroupRequests, updateSubGroupRequests,
     renameGroup, deleteGroup, reorderGroups, reorderGroupRequests,
     updateRequestFields, applyResponse, resetGroupRequests, resetSelectedRequests,
     updateGroupConfig, removeGroupConfig, updateGroupProxy, updateSubGroup, createGroup,
-    getProjectSnapshot,
   } = useProjects();
   const { scripts } = useScripts();
   const { envs } = useEnvs();
-  const { algorithms } = useAlgorithms();   // 💡 [新增]
-  const { settingsRef } = useSettings();
+  const { algorithms } = useAlgorithms();
+  const { tasks, startTask, pauseTask, resumeTask, stopTask, findTaskByGroup } = useExecution();
   const { message } = AntApp.useApp();
 
   const [activeGroupId, setActiveGroupId] = usePersistentState(`ui-proj-${projectId}-group`, null);
@@ -45,20 +44,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
 
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [intervalSec, setIntervalSec] = useState(0);
-
-  const [isRunning, setIsRunning] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const [isStopping, setIsStopping] = useState(false);
-
-  const stopAfterRoundRef = useRef(false);
-  const pauseFlagRef = useRef(false);
-  const intervalSecRef = useRef(intervalSec);   // 💡 intervalSec 用 ref 保证最新
-  useEffect(() => { intervalSecRef.current = intervalSec }, [intervalSec]);
-
-  const [execLogs, setExecLogs] = useState([]);
-
   const [monitorModalOpen, setMonitorModalOpen] = useState(false);
-  const [execCurrentLevel, setExecCurrentLevel] = useState('-');
 
   const [subConfigDrawerOpen, setSubConfigDrawerOpen] = useState(false);
   const [algoConfigDrawerOpen, setAlgoConfigDrawerOpen] = useState(false);
@@ -78,13 +64,19 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const [selectedExportReqs, setSelectedExportReqs] = useState([]);
   const [runJsModalOpen, setRunJsModalOpen] = useState(false);
 
-  // 💡 [新增] 执行前预检 Modal
   const [preflightModal, setPreflightModal] = useState({ open: false, issues: [], pendingAction: null });
-
-  const pendingSubPayloadRef = useRef(null);
 
   const project = useMemo(() => projects.find((p) => p.id === projectId), [projects, projectId]);
   const activeGroup = project?.groups.find((g) => g.id === activeGroupId);
+  const startupPlan = project?.startupPlan || { groups: [] };
+  const enabledPlanCount = (startupPlan.groups || []).filter((g) => g.enabled).length;
+
+  const myTask = useMemo(
+    () => (activeGroup ? findTaskByGroup(projectId, activeGroup.id) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tasks, activeGroup?.id, projectId]
+  );
+  const isRunning = myTask && (myTask.status === 'running' || myTask.status === 'paused' || myTask.status === 'stopping')
 
   useEffect(() => {
     window.electronAPI?.workarea?.getPath().then(r => { if (r?.ok) setBasePath(r.path); });
@@ -142,12 +134,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     if (!basePath) return message.warning('请先绑定工作区路径');
     const folderName = `${project.name}_${activeGroup.name}`.replace(/[<>:"/\\|?*]/g, '_');
     const r = await window.electronAPI?.workarea?.run({ folderName, intervalSec: 0 });
-    if (r?.ok) {
-      message.success(r.msg);
-      setRunJsModalOpen(false);
-    } else {
-      message.error(r.error);
-    }
+    if (r?.ok) { message.success(r.msg); setRunJsModalOpen(false); } else message.error(r.error);
   };
 
   if (!activeGroup) {
@@ -187,6 +174,7 @@ export default function ProjectDetailPage({ projectId, onBack }) {
           </div>
           <div style={{ flex: 1 }} />
           <Space>
+            <Button icon={<SettingOutlined />} onClick={() => onOpenProjectSettings?.(projectId)}>项目设置</Button>
             <Button icon={<DownloadOutlined />} onClick={handleExportProject}>导出项目</Button>
             <Popconfirm title="删除项目？" description="不可恢复" onConfirm={() => { deleteProject(projectId); onBack?.(); }}>
               <Button danger icon={<DeleteOutlined />}>删除项目</Button>
@@ -211,52 +199,57 @@ export default function ProjectDetailPage({ projectId, onBack }) {
             </div>
           </Col>
 
-          {project.groups.map((g, idx) => (
-            <Col key={g.id} xs={24} sm={12} md={8} xl={6}>
-              <div
-                draggable
-                onDragStart={(e) => handleDragStart(e, idx)}
-                onDragOver={(e) => handleDragOver(e, idx)}
-                onDrop={(e) => handleDrop(e, idx)}
-                onDragEnd={() => { setDraggingIndex(null); setDropIndex(null); }}
-                style={{
-                  opacity: draggingIndex === idx ? 0.4 : 1,
-                  outline: dropIndex === idx && draggingIndex !== idx ? '2px dashed #1677ff' : 'none',
-                  borderRadius: 12, height: '100%', transition: 'all 0.2s'
-                }}
-              >
-                <Card
-                  hoverable
-                  onClick={() => setActiveGroupId(g.id)}
-                  style={{ height: 140, borderRadius: 12, border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}
-                  styles={{ body: { padding: 20, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' } }}
+          {project.groups.map((g, idx) => {
+            const groupTask = findTaskByGroup(projectId, g.id);
+            const isGroupRunning = groupTask && (groupTask.status === 'running' || groupTask.status === 'paused' || groupTask.status === 'stopping');
+            return (
+              <Col key={g.id} xs={24} sm={12} md={8} xl={6}>
+                <div
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, idx)}
+                  onDragOver={(e) => handleDragOver(e, idx)}
+                  onDrop={(e) => handleDrop(e, idx)}
+                  onDragEnd={() => { setDraggingIndex(null); setDropIndex(null); }}
+                  style={{
+                    opacity: draggingIndex === idx ? 0.4 : 1,
+                    outline: dropIndex === idx && draggingIndex !== idx ? '2px dashed #1677ff' : 'none',
+                    borderRadius: 12, height: '100%', transition: 'all 0.2s'
+                  }}
                 >
-                  <Flex justify="space-between" align="flex-start">
-                    <Flex align="center" gap={8}>
-                      <HolderOutlined style={{ color: '#bfbfbf', cursor: 'grab' }} />
-                      <Text strong style={{ fontSize: 16 }} ellipsis>{g.name}</Text>
+                  <Card
+                    hoverable
+                    onClick={() => setActiveGroupId(g.id)}
+                    style={{ height: 140, borderRadius: 12, border: isGroupRunning ? '2px solid #10b981' : '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}
+                    styles={{ body: { padding: 20, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' } }}
+                  >
+                    <Flex justify="space-between" align="flex-start">
+                      <Flex align="center" gap={8}>
+                        <HolderOutlined style={{ color: '#bfbfbf', cursor: 'grab' }} />
+                        <Text strong style={{ fontSize: 16 }} ellipsis>{g.name}</Text>
+                        {isGroupRunning && <Tag color="processing">执行中</Tag>}
+                      </Flex>
+                      <Dropdown menu={{
+                        items: [
+                          { key: 'rename', label: '重命名', icon: <EditOutlined />, onClick: (e) => { e.domEvent.stopPropagation(); setRenamingGroup(g); setRenameValue(g.name); } },
+                          { key: 'delete', label: '删除', icon: <DeleteOutlined />, danger: true, onClick: (e) => { e.domEvent.stopPropagation(); deleteGroup(projectId, g.id); } }
+                        ]
+                      }}>
+                        <Button size="small" type="text" icon={<MoreOutlined />} onClick={(e) => e.stopPropagation()} />
+                      </Dropdown>
                     </Flex>
-                    <Dropdown menu={{
-                      items: [
-                        { key: 'rename', label: '重命名', icon: <EditOutlined />, onClick: (e) => { e.domEvent.stopPropagation(); setRenamingGroup(g); setRenameValue(g.name); } },
-                        { key: 'delete', label: '删除', icon: <DeleteOutlined />, danger: true, onClick: (e) => { e.domEvent.stopPropagation(); deleteGroup(projectId, g.id); } }
-                      ]
-                    }}>
-                      <Button size="small" type="text" icon={<MoreOutlined />} onClick={(e) => e.stopPropagation()} />
-                    </Dropdown>
-                  </Flex>
 
-                  <Flex justify="space-between" align="flex-end">
-                    <Space size={4}>
-                      <Tag color="blue">主 {g.requests.length}</Tag>
-                      <Tag color="orange">副 {g.subGroup?.requests?.length || 0}</Tag>
-                    </Space>
-                    <Button size="small" type="primary" ghost icon={<FolderOpenOutlined />}>打开</Button>
-                  </Flex>
-                </Card>
-              </div>
-            </Col>
-          ))}
+                    <Flex justify="space-between" align="flex-end">
+                      <Space size={4}>
+                        <Tag color="blue">主 {g.requests.length}</Tag>
+                        <Tag color="orange">副 {g.subGroup?.requests?.length || 0}</Tag>
+                      </Space>
+                      <Button size="small" type="primary" ghost icon={<FolderOpenOutlined />}>打开</Button>
+                    </Flex>
+                  </Card>
+                </div>
+              </Col>
+            );
+          })}
         </Row>
 
         <Modal title="新建请求组" open={newGroupModalOpen} onOk={handleCreateGroup} onCancel={() => setNewGroupModalOpen(false)}>
@@ -273,21 +266,16 @@ export default function ProjectDetailPage({ projectId, onBack }) {
   const isSubMode = activeLevel === 'sub';
   const currentReqs = isSubMode ? (activeGroup.subGroup?.requests || []) : activeGroup.requests;
   const subConfig = activeGroup.subGroup || { zones: [], successKeyword: '"code":200', maxRetries: 3, judgeVar: 'level', proxy: '' };
-
   const currentConfigs = isSubMode
     ? (activeGroup.configs?.sub || {})
     : (activeGroup.configs?.main || (activeGroup.configs?.sub ? {} : activeGroup.configs) || {});
-
   const mainProxy = activeGroup.proxy || '';
-  const currentProxy = isSubMode && subConfig.proxy ? subConfig.proxy : mainProxy;
 
-  // 💡 [修复 #4] 直接把 updater 交给 store
   const setEntries = (updater) => {
     if (!isSubMode) updateGroupRequests(projectId, activeGroup.id, updater);
     else updateSubGroupRequests(projectId, activeGroup.id, updater);
   };
 
-  // 💡 [修复 #3] saveSubConfig 传 patch；各区操作走函数式
   const saveSubConfig = (patch) => updateSubGroup(projectId, activeGroup.id, patch);
   const handleAddZone = () => updateSubGroup(projectId, activeGroup.id, (prev) => ({
     zones: [...(prev.zones || []), { id: uid(), min: 0, max: 0, status: 'none' }],
@@ -302,233 +290,9 @@ export default function ProjectDetailPage({ projectId, onBack }) {
     zones: (prev.zones || []).map(z => (z.id === id ? { ...z, status: 'none' } : z)),
   }));
 
-  const processSingleEntry = async (entry, ctx, source = 'main') => {
-    const uid = entry._uid;
-    const req = entry.request || {};
-    const method = req.method || 'GET';
-    const updates = [];
-
-    try {
-      let rawUrl = req.url || '';
-      let rawBody = req.postData?.text;
-      let rawHeaders = req.headers || [];
-
-      const allTextFields = [rawUrl, rawBody, ...rawHeaders.map(h => h.value)].filter(Boolean);
-      for (const text of allTextFields) {
-        await extractVarsOnly(text, ctx);
-      }
-
-      let updatedUrl = await updateOpTags(rawUrl, ctx);
-      let updatedBody = rawBody ? await updateOpTags(rawBody, ctx) : undefined;
-      let updatedHeaders = [...rawHeaders];
-
-      for (let i = 0; i < updatedHeaders.length; i++) {
-        if (updatedHeaders[i].value) {
-          updatedHeaders[i] = { ...updatedHeaders[i], value: await updateOpTags(updatedHeaders[i].value, ctx) };
-        }
-      }
-
-      if (updatedUrl !== rawUrl) updates.push({ fieldPath: 'request.url', value: updatedUrl });
-      if (updatedBody && updatedBody !== rawBody) updates.push({ fieldPath: 'request.postData.text', value: updatedBody });
-      updatedHeaders.forEach((h, i) => {
-        if (h.value !== rawHeaders[i].value) updates.push({ fieldPath: `request.headers.${i}.value`, value: h.value });
-      });
-
-      if (updates.length > 0) {
-        updateRequestFields(projectId, activeGroup.id, uid, updates, source === 'sub' ? 'sub' : 'main');
-      }
-
-      let finalUrl = await processTags(updatedUrl, ctx);
-      let finalBody = updatedBody ? await processTags(updatedBody, ctx) : undefined;
-
-      let finalHeaders = {};
-      for (const h of updatedHeaders) {
-        if (h.name && !['host', 'content-length', 'connection'].includes(h.name.toLowerCase())) {
-          finalHeaders[h.name] = await processTags(h.value || '', ctx);
-        }
-      }
-
-      // 💡 [改] 从全局设置读取超时/重试/间隔
-const s = settingsRef.current;
-const payload = {
-  url: finalUrl, method, headers: finalHeaders, body: finalBody,
-  proxy: currentProxy || undefined,
-  timeoutMs: s.timeoutMs,
-};
-const maxRetries = Number(s.retries) || 0;
-let res = null;
-for (let attempt = 0; attempt <= maxRetries; attempt++) {
-  res = await window.electronAPI.httpRequest(payload);
-  if (res && res.status > 0) break;
-  if (attempt < maxRetries) {
-    setExecLogs(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: finalUrl, method, status: 'RETRY', statusText: `第 ${attempt + 1} 次失败，即将重试`, body: '', timeCost: 0, source }, ...prev].slice(0, 150));
-    await new Promise(r => setTimeout(r, s.retryDelayMs));
-  }
-}
-
-      ctx.responses.push({ status: res.status, headers: res.headers, body: res.body });
-
-      setExecLogs(prev => [{
-        id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: finalUrl, method,
-        status: res.status, statusText: res.statusText, body: res.body || '', timeCost: res.time, source
-      }, ...prev].slice(0, 150));
-
-      applyResponse(projectId, activeGroup.id, uid, {
-        status: res.status,
-        statusText: res.statusText,
-        headers: res.headers || [],
-        content: { text: res.body, size: res.body?.length || 0, mimeType: 'application/json' },
-        time: res.time,
-      }, source === 'sub' ? 'sub' : 'main');
-
-      return { ...res, _payload: payload };
-    } catch (e) {
-      ctx.responses.push({ status: 0, headers: [], body: `[ERROR] ${e.message}` });
-      setExecLogs(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: req.url, method, status: 'ERR', statusText: e.message, body: '', timeCost: 0, source }, ...prev].slice(0, 150));
-      return null;
-    }
-  };
-
-  const executeGroup = async (isSoloSub = false) => {
-    stopAfterRoundRef.current = false;
-    pauseFlagRef.current = false;
-    setIsPaused(false);
-    setIsStopping(false);
-    setIsRunning(true);
-    setExecLogs([]);
-    setExecCurrentLevel('-');
-    pendingSubPayloadRef.current = null;
-
-    message.success(isSoloSub ? `开始单独调试副组` : `开始执行主组流程`);
-
-    const checkPause = async () => {
-      while (pauseFlagRef.current && !stopAfterRoundRef.current) {
-        await new Promise(r => setTimeout(r, 500));
-      }
-    };
-
-    while (!stopAfterRoundRef.current) {
-      const fresh = getProjectSnapshot(projectId);
-      const freshGroup = fresh?.groups?.find((g) => g.id === activeGroup.id);
-      if (!freshGroup) {
-        message.warning('请求组已被删除，执行终止');
-        break;
-      }
-      const mainReqs = freshGroup.requests || [];
-      const subReqsData = freshGroup.subGroup?.requests || [];
-      const freshSubConfig = freshGroup.subGroup || {
-        zones: [], successKeyword: '"code":200', maxRetries: 3, judgeVar: 'level', proxy: '',
-      };
-
-      const groupCtx = { vars: {}, responses: [], scripts, envs };
-
-      if (!isSoloSub) {
-        for (let i = 0; i < mainReqs.length; i++) {
-          await checkPause();
-          await processSingleEntry(mainReqs[i], groupCtx, 'main');
-          await new Promise(r => setTimeout(r, settingsRef.current.requestDelayMs));
-        }
-      }
-
-      if (subReqsData.length > 0) {
-        await checkPause();
-
-        const judgeVarName = freshSubConfig.judgeVar || 'level';
-        const judgeVal = isSoloSub ? 999999 : groupCtx.vars[judgeVarName];
-
-        if (judgeVal !== undefined) {
-          const currLevel = Number(judgeVal);
-          setExecCurrentLevel(currLevel);
-
-          const matchedZone = (freshSubConfig.zones || []).find(z => currLevel >= z.min && currLevel < z.max);
-
-          if (isSoloSub || (matchedZone && matchedZone.status === 'none')) {
-            let lastSubResponseText = '';
-            let currentRetryCount = 1;
-
-            if (pendingSubPayloadRef.current && pendingSubPayloadRef.current.zoneId === (isSoloSub ? 'solo' : matchedZone.id)) {
-              currentRetryCount = pendingSubPayloadRef.current.retryCount;
-              message.warning(`[副组] 原包重试中 (${currentRetryCount}/${freshSubConfig.maxRetries})...`);
-
-              for (const p of pendingSubPayloadRef.current.payloads) {
-                await checkPause();
-                const res = await window.electronAPI.httpRequest(p);
-                if (res && res.body) lastSubResponseText = res.body;
-                setExecLogs(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), url: p.url, method: p.method, status: res.status, statusText: res.statusText, body: res.body || '', timeCost: res.time, source: 'sub-retry' }, ...prev].slice(0, 150));
-                await new Promise(r => setTimeout(r, settingsRef.current.requestDelayMs));
-              }
-            } else {
-              message.info(`[副组] 正常执行中...`);
-              const subCtx = { vars: groupCtx.vars, responses: [], scripts, envs };
-              let cachedPayloads = [];
-
-              for (let j = 0; j < subReqsData.length; j++) {
-                await checkPause();
-                const res = await processSingleEntry(subReqsData[j], subCtx, 'sub');
-                if (res && res._payload) {
-                  cachedPayloads.push(res._payload);
-                  if (res.body) lastSubResponseText = res.body;
-                }
-                await new Promise(r => setTimeout(r, settingsRef.current.requestDelayMs));
-              }
-              pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: cachedPayloads, retryCount: 1 };
-            }
-
-            if (lastSubResponseText.includes(freshSubConfig.successKeyword)) {
-              message.success(`[副组] 响应成功！`);
-              if (!isSubMode && matchedZone) {
-                updateSubGroup(projectId, activeGroup.id, (prev) => ({
-                  zones: (prev.zones || []).map(z => (z.id === matchedZone.id ? { ...z, status: 'success' } : z)),
-                }));
-              }
-              pendingSubPayloadRef.current = null;
-            } else {
-              if (currentRetryCount >= (freshSubConfig.maxRetries || 3)) {
-                message.error(`[副组] 达到最大重试次数，标记为死局！`);
-                if (!isSubMode && matchedZone) {
-                  updateSubGroup(projectId, activeGroup.id, (prev) => ({
-                    zones: (prev.zones || []).map(z => (z.id === matchedZone.id ? { ...z, status: 'failed' } : z)),
-                  }));
-                }
-                pendingSubPayloadRef.current = null;
-              } else {
-                message.warning(`[副组] 失败，等待主循环原包重试...`);
-                pendingSubPayloadRef.current = { zoneId: isSoloSub ? 'solo' : matchedZone.id, payloads: pendingSubPayloadRef.current.payloads, retryCount: currentRetryCount + 1 };
-              }
-            }
-          }
-        }
-      }
-
-      if (stopAfterRoundRef.current) {
-        message.success('当前组已完整执行完毕，任务平滑停止。');
-        break;
-      }
-
-      if (isSoloSub || !intervalSecRef.current || intervalSecRef.current <= 0) break;
-
-      let waitTime = intervalSecRef.current * 1000;
-      while (waitTime > 0 && !stopAfterRoundRef.current) {
-        await new Promise(r => setTimeout(r, settingsRef.current.requestDelayMs));
-        if (!pauseFlagRef.current) waitTime -= settingsRef.current.requestDelayMs;
-      }
-    }
-
-    setIsRunning(false);
-    setIsStopping(false);
-    setIsPaused(false);
-  };
-
-  const handlePause = () => { pauseFlagRef.current = true; setIsPaused(true); message.warning('已暂停执行'); };
-  const handleResume = () => { pauseFlagRef.current = false; setIsPaused(false); message.success('已继续执行'); };
-  const handleStop = () => { stopAfterRoundRef.current = true; setIsStopping(true); message.warning('已发出停止指令，正在等待当前组执行完毕...'); };
-
-  // 💡 [新增] 执行前预检
   const preflightCheck = () => {
     const globalAlgos = {};
-    for (const [k, v] of Object.entries(algorithms?.global || {})) {
-      if (v?.config) globalAlgos[k] = v;
-    }
+    for (const [k, v] of Object.entries(algorithms?.global || {})) if (v?.config) globalAlgos[k] = v;
     const issues = [];
     const scanRequest = (entry) => {
       const req = entry.request || {};
@@ -540,14 +304,12 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
       for (const { field, text } of texts) {
         if (!text) continue;
         const errs = validateTagText(text, { envs, scripts, globalAlgos });
-        errs.forEach((e) => {
-          issues.push({
-            level: e.level,
-            request: `${req.method || 'GET'} ${(req.url || '').slice(0, 60)}`,
-            field,
-            message: e.message,
-          });
-        });
+        errs.forEach((e) => issues.push({
+          level: e.level,
+          request: `${req.method || 'GET'} ${(req.url || '').slice(0, 60)}`,
+          field,
+          message: e.message,
+        }));
       }
     };
     for (const e of activeGroup.requests) scanRequest(e);
@@ -561,6 +323,36 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
     setPreflightModal({ open: true, issues, pendingAction: action });
   };
 
+  const handleStart = () => {
+    if (isSubMode) {
+      handleStartWithPreflight(() => startTask({ projectId, groupId: activeGroup.id, intervalSec: 0, isSoloSub: true }));
+    } else {
+      setRunModalOpen(true);
+    }
+  };
+
+  const handleStartPlan = () => {
+    const enabled = (startupPlan.groups || []).filter((g) => g.enabled);
+    if (enabled.length === 0) return message.warning('启动预案中没有启用的组');
+    const issues = preflightCheck();
+    const doStart = () => {
+      let started = 0;
+      for (const item of enabled) {
+        const g = project.groups.find((x) => x.id === item.groupId);
+        if (!g) continue;
+        if (findTaskByGroup(projectId, item.groupId)) {
+          message.info(`「${g.name}」已在运行，跳过`);
+          continue;
+        }
+        startTask({ projectId, groupId: item.groupId, intervalSec: item.intervalSec || 0, isSoloSub: false });
+        started++;
+      }
+      if (started > 0) message.success(`已按预案启动 ${started} 个组`);
+    };
+    if (issues.length === 0) { doStart(); return; }
+    setPreflightModal({ open: true, issues, pendingAction: doStart });
+  };
+
   const moreMenuItems = [
     { key: 'bind', label: `绑定/切换工作区 (${basePath ? '已绑定' : '未绑定'})`, icon: <FolderOutlined />, onClick: handleBindPath },
     { key: 'mkdir', label: '新建请求组文件夹', icon: <FolderOpenOutlined />, onClick: handleCreateFolder },
@@ -568,6 +360,7 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
     { key: 'userInfo', label: '导出 userInfo.json', icon: <SaveOutlined />, onClick: handleExportUserInfo },
     { key: 'runJs', label: '运行 run.js', icon: <PlayCircleOutlined />, onClick: () => setRunJsModalOpen(true) },
     { type: 'divider' },
+    { key: 'projectSettings', label: '项目设置', icon: <SettingOutlined />, onClick: () => onOpenProjectSettings?.(projectId) },
     { key: 'proxy', label: `${isSubMode ? '副组' : '主组'}代理设置`, icon: <GlobalOutlined />, onClick: () => { setProxyValue(isSubMode ? subConfig.proxy : mainProxy); setProxyModalOpen(true); } },
     { key: 'export', label: '导出当前项目', icon: <DownloadOutlined />, onClick: handleExportProject },
     { type: 'divider' },
@@ -583,14 +376,11 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
       }}>
         <Flex align="center" gap={12}>
           <Button size="small" shape="circle" icon={<ArrowLeftOutlined />} onClick={() => setActiveGroupId(null)} />
-
           <Breadcrumb style={{ margin: 0 }} items={[
             { title: <Text type="secondary" style={{ fontSize: 12 }}>{project.name}</Text> },
             { title: <Text strong style={{ fontSize: 12 }}>{activeGroup.name}</Text> }
           ]} />
-
           <Divider orientation="vertical" style={{ height: 16, margin: '0 4px' }} />
-
           <Segmented
             size="small"
             options={[
@@ -600,51 +390,53 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
             value={activeLevel}
             onChange={setActiveLevel}
           />
+          {isRunning && <Tag color="processing" icon={<LoadingOutlined />}>{myTask?.status === 'paused' ? '已暂停' : '执行中'} · 轮次 {myTask?.rounds || 0}</Tag>}
         </Flex>
 
         <Space size={12}>
           <Tooltip title="配置当前组使用的算法密钥">
-            <Button size="small" icon={<KeyOutlined />} onClick={() => setAlgoConfigDrawerOpen(true)}>
-              密钥
-            </Button>
+            <Button size="small" icon={<KeyOutlined />} onClick={() => setAlgoConfigDrawerOpen(true)}>密钥</Button>
           </Tooltip>
-
           <Button
-            size="small"
-            icon={<SettingOutlined />}
-            onClick={() => setSubConfigDrawerOpen(true)}
-            style={{
-              background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)',
-              color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(118,75,162,0.3)'
-            }}
+            size="small" icon={<SettingOutlined />} onClick={() => setSubConfigDrawerOpen(true)}
+            style={{ background: 'linear-gradient(90deg, #667eea 0%, #764ba2 100%)', color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(118,75,162,0.3)' }}
           >
             阶梯
           </Button>
 
+          {enabledPlanCount > 0 && (
+            <Tooltip title={`按启动预案批量启动 ${enabledPlanCount} 个组`}>
+              <Button
+                size="small"
+                icon={<RocketOutlined />}
+                onClick={handleStartPlan}
+                style={{ background: 'linear-gradient(90deg, #f59e0b 0%, #d97706 100%)', color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(245,158,11,0.3)' }}
+              >
+                按预案启动 ({enabledPlanCount})
+              </Button>
+            </Tooltip>
+          )}
+
           {isRunning ? (
             <Space>
-              <Button size="small" icon={isPaused ? <CaretRightOutlined /> : <PauseCircleOutlined />} onClick={isPaused ? handleResume : handlePause} disabled={isStopping}>
-                {isPaused ? '继续' : '暂停'}
+              <Button size="small" icon={myTask?.status === 'paused' ? <CaretRightOutlined /> : <PauseCircleOutlined />}
+                onClick={() => myTask?.status === 'paused' ? resumeTask(myTask.id) : pauseTask(myTask.id)}
+                disabled={myTask?.status === 'stopping'}>
+                {myTask?.status === 'paused' ? '继续' : '暂停'}
               </Button>
-              <Button size="small" danger type="primary" icon={isStopping ? <LoadingOutlined /> : <StopOutlined />} onClick={handleStop} disabled={isStopping}>
-                {isStopping ? '等待结束...' : '停止'}
+              <Button size="small" danger type="primary"
+                icon={myTask?.status === 'stopping' ? <LoadingOutlined /> : <StopOutlined />}
+                onClick={() => stopTask(myTask.id)}
+                disabled={myTask?.status === 'stopping'}>
+                {myTask?.status === 'stopping' ? '等待结束...' : '停止'}
               </Button>
+              <Button size="small" onClick={() => setMonitorModalOpen(true)}>监控</Button>
             </Space>
           ) : (
             <Button
-              size="small"
-              type="primary"
-              icon={<PlayCircleOutlined />}
-              // 💡 [新增] 走预检
-              onClick={() => handleStartWithPreflight(() => {
-                setMonitorModalOpen(true);
-                if (isSubMode) executeGroup(true);
-                else setRunModalOpen(true);
-              })}
-              style={{
-                background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
-                color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(16,185,129,0.3)'
-              }}
+              size="small" type="primary" icon={<PlayCircleOutlined />}
+              onClick={handleStart}
+              style={{ background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)', color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(16,185,129,0.3)' }}
             >
               {isSubMode ? '单测副组' : '启动主组'}
             </Button>
@@ -674,24 +466,30 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
         />
       </div>
 
+      {/* 监控 Modal */}
       <Modal
-        title="请求组执行监控"
+        title={<Space><span>执行监控 - {activeGroup.name}</span>{myTask && <Tag color="blue">{myTask.status}</Tag>}</Space>}
         open={monitorModalOpen}
         onCancel={() => setMonitorModalOpen(false)}
         width="85vw"
         style={{ top: 20 }}
-        mask={{ closable: false }}
         footer={[
-          <Button key="pause" icon={isPaused ? <CaretRightOutlined /> : <PauseCircleOutlined />} onClick={isPaused ? handleResume : handlePause} disabled={!isRunning || isStopping}>
-            {isPaused ? '继续执行' : '暂停执行'}
-          </Button>,
-          <Button key="stop" danger onClick={handleStop} disabled={!isRunning || isStopping}>
-            {isStopping ? '正在等待当前组结束...' : '平滑停止'}
-          </Button>,
+          myTask && (myTask.status === 'running' || myTask.status === 'paused') && (
+            <Button key="pause"
+              icon={myTask.status === 'paused' ? <CaretRightOutlined /> : <PauseCircleOutlined />}
+              onClick={() => myTask.status === 'paused' ? resumeTask(myTask.id) : pauseTask(myTask.id)}>
+              {myTask.status === 'paused' ? '继续执行' : '暂停执行'}
+            </Button>
+          ),
+          myTask && myTask.status !== 'stopped' && (
+            <Button key="stop" danger onClick={() => stopTask(myTask.id)} disabled={myTask.status === 'stopping'}>
+              {myTask.status === 'stopping' ? '正在等待本轮结束...' : '平滑停止'}
+            </Button>
+          ),
           <Button key="close" type="primary" onClick={() => setMonitorModalOpen(false)}>
-            {isRunning ? '后台运行' : '关闭'}
-          </Button>
-        ]}
+            {myTask && myTask.status !== 'stopped' ? '后台运行' : '关闭'}
+          </Button>,
+        ].filter(Boolean)}
       >
         <Splitter style={{ height: '65vh', border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
           <Splitter.Panel defaultSize="30%" min="20%">
@@ -699,7 +497,10 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
               <div style={{ padding: '12px 16px', background: '#f0f2f5', borderBottom: '1px solid #e5e7eb' }}>
                 <Text strong>阶梯区间状态</Text>
                 <div style={{ marginTop: 8 }}>
-                  当前等级/判定值：<Tag color="blue">{execCurrentLevel}</Tag>
+                  当前等级/判定值：<Tag color="blue">{myTask?.currentLevel ?? '-'}</Tag>
+                </div>
+                <div style={{ marginTop: 4, fontSize: 12, color: '#888' }}>
+                  已跑 {myTask?.rounds || 0} 轮
                 </div>
               </div>
               <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
@@ -727,15 +528,15 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
             <Flex vertical style={{ height: '100%', background: '#1e1e1e' }}>
               <div style={{ padding: '8px 12px', background: '#2d2d2d', borderBottom: '1px solid #3e3e3e', color: '#ccc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={{ color: '#ccc' }}>实时响应输出</Text>
-                <Badge count={execLogs.length} size="small" />
+                <Badge count={myTask?.logs?.length || 0} size="small" />
               </div>
               <div style={{ flex: 1, overflow: 'auto', padding: 16, fontFamily: 'Consolas, monospace', fontSize: 13 }}>
-                {execLogs.length === 0 ? (
+                {!myTask?.logs?.length ? (
                   <Text style={{ color: '#666' }}>等待响应...</Text>
                 ) : (
                   <List
                     split={false}
-                    dataSource={execLogs}
+                    dataSource={myTask.logs}
                     renderItem={(item) => (
                       <div style={{ marginBottom: 12, borderBottom: '1px solid #333', paddingBottom: 12 }}>
                         <Flex gap={12} align="center" style={{ marginBottom: 4 }}>
@@ -765,12 +566,7 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
         </Splitter>
       </Modal>
 
-      <Drawer
-        title={<Space><KeyOutlined /> {isSubMode ? '副组' : '主组'} 算法密钥配置</Space>}
-        placement="right" width={450}
-        onClose={() => setAlgoConfigDrawerOpen(false)}
-        open={algoConfigDrawerOpen}
-      >
+      <Drawer title={<Space><KeyOutlined /> {isSubMode ? '副组' : '主组'} 算法密钥配置</Space>} placement="right" width={450} onClose={() => setAlgoConfigDrawerOpen(false)} open={algoConfigDrawerOpen}>
         {Object.keys(currentConfigs).length === 0 ? (
           <Empty description="当前组尚未记忆任何密钥" />
         ) : (
@@ -779,36 +575,20 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
               const tpl = TRANSFORMS[algoKey];
               if (!tpl) return null;
               return (
-                <Card
-                  key={algoKey}
-                  size="small"
-                  title={<Text strong>{tpl.label}</Text>}
-                  extra={
-                    <Popconfirm title="删除此密钥配置？" onConfirm={() => removeGroupConfig(projectId, activeGroup.id, activeLevel, algoKey)}>
-                      <Button size="small" danger type="text" icon={<DeleteOutlined />}>清除</Button>
-                    </Popconfirm>
-                  }
-                >
+                <Card key={algoKey} size="small" title={<Text strong>{tpl.label}</Text>}
+                  extra={<Popconfirm title="删除此密钥配置？" onConfirm={() => removeGroupConfig(projectId, activeGroup.id, activeLevel, algoKey)}>
+                    <Button size="small" danger type="text" icon={<DeleteOutlined />}>清除</Button>
+                  </Popconfirm>}>
                   <Form layout="vertical" size="small">
                     {tpl.configFields?.map(f => (
                       <Form.Item key={f.name} label={f.label} style={{ marginBottom: 8 }}>
                         {f.type === 'boolean' ? (
-                          <Switch
-                            size="small"
-                            checked={cfg[f.name] === 'true' || cfg[f.name] === true}
-                            onChange={(checked) =>
-                              updateGroupConfig(projectId, activeGroup.id, activeLevel, algoKey, {
-                                ...cfg,
-                                [f.name]: checked ? 'true' : 'false',
-                              })
-                            }
-                          />
+                          <Switch size="small" checked={cfg[f.name] === 'true' || cfg[f.name] === true}
+                            onChange={(checked) => updateGroupConfig(projectId, activeGroup.id, activeLevel, algoKey, { ...cfg, [f.name]: checked ? 'true' : 'false' })} />
                         ) : (
-                          <Input
-                            value={cfg[f.name]}
+                          <Input value={cfg[f.name]}
                             onChange={e => updateGroupConfig(projectId, activeGroup.id, activeLevel, algoKey, { ...cfg, [f.name]: e.target.value })}
-                            placeholder={f.defaultValue || ''}
-                          />
+                            placeholder={f.defaultValue || ''} />
                         )}
                       </Form.Item>
                     ))}
@@ -847,12 +627,7 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
           </Card>
 
           <Card size="small" variant="borderless" title="阶梯区间管理" extra={<Button size="small" icon={<PlusOutlined />} onClick={handleAddZone}>添加区间</Button>}>
-            <Table
-              size="small"
-              pagination={false}
-              dataSource={subConfig.zones || []}
-              rowKey="id"
-              scroll={{ y: 300 }}
+            <Table size="small" pagination={false} dataSource={subConfig.zones || []} rowKey="id" scroll={{ y: 300 }}
               columns={[
                 { title: '最小值 (含)', dataIndex: 'min', width: 100, render: (t, r) => <InputNumber size="small" value={t} onChange={v => handleUpdateZone(r.id, 'min', v)} style={{ width: '100%' }} /> },
                 { title: '最大值 (不含)', dataIndex: 'max', width: 100, render: (t, r) => <InputNumber size="small" value={t} onChange={v => handleUpdateZone(r.id, 'max', v)} style={{ width: '100%' }} /> },
@@ -873,16 +648,29 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
         </Flex>
       </Drawer>
 
-      <Modal title={`设置 ${isSubMode ? '副组' : '主组'} 网络代理`} open={proxyModalOpen} onOk={() => { if (isSubMode) saveSubConfig({ proxy: proxyValue }); else updateGroupProxy(projectId, activeGroup.id, proxyValue); setProxyModalOpen(false); }} onCancel={() => setProxyModalOpen(false)} okText="保存">
+      <Modal title={`设置 ${isSubMode ? '副组' : '主组'} 网络代理`} open={proxyModalOpen}
+        onOk={() => { if (isSubMode) saveSubConfig({ proxy: proxyValue }); else updateGroupProxy(projectId, activeGroup.id, proxyValue); setProxyModalOpen(false); }}
+        onCancel={() => setProxyModalOpen(false)} okText="保存">
         <Input placeholder="如 http://127.0.0.1:7890 (留空即不使用)" value={proxyValue} onChange={(e) => setProxyValue(e.target.value)} />
       </Modal>
 
-      <Modal title="执行主组与副组" open={runModalOpen} onOk={() => { setRunModalOpen(false); executeGroup(false); }} onCancel={() => setRunModalOpen(false)} okText="开始执行" width={500}>
+      <Modal title="执行主组与副组" open={runModalOpen}
+        onOk={() => {
+          setRunModalOpen(false);
+          handleStartWithPreflight(() => {
+            startTask({ projectId, groupId: activeGroup.id, intervalSec, isSoloSub: false });
+            setMonitorModalOpen(true);
+          });
+        }}
+        onCancel={() => setRunModalOpen(false)} okText="开始执行" width={500}>
         <Space orientation="vertical" style={{ marginTop: 12, width: '100%' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span>定时循环（秒，0 仅一次）：</span>
             <InputNumber min={0} value={intervalSec} onChange={setIntervalSec} />
           </div>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            启动后可在顶栏「执行日志」看到所有正在运行的任务。
+          </Text>
         </Space>
       </Modal>
 
@@ -901,10 +689,7 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
         )} />
       </Modal>
 
-      {/* 💡 [新增] 执行前预检 Modal —— 位于所有原有 Modal 之后、Flex 结束标签之前 */}
-      <Modal
-        title="执行前预检"
-        open={preflightModal.open}
+      <Modal title="执行前预检" open={preflightModal.open}
         onCancel={() => setPreflightModal({ open: false, issues: [], pendingAction: null })}
         width={700}
         footer={[
@@ -914,8 +699,7 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
             setPreflightModal({ open: false, issues: [], pendingAction: null });
             act?.();
           }}>忽略并继续</Button>,
-        ]}
-      >
+        ]}>
         <div style={{ marginTop: 8 }}>
           <Text type="secondary">
             发现 {preflightModal.issues.length} 个问题（
@@ -925,22 +709,18 @@ for (let attempt = 0; attempt <= maxRetries; attempt++) {
             ）：
           </Text>
           <div style={{ maxHeight: 400, overflow: 'auto', marginTop: 8 }}>
-            <List
-              size="small"
-              dataSource={preflightModal.issues}
-              renderItem={(iss) => (
-                <List.Item>
-                  <Flex vertical gap={2} style={{ width: '100%' }}>
-                    <Flex gap={6} align="center">
-                      <Tag color={iss.level === 'error' ? 'error' : 'warning'} style={{ margin: 0 }}>{iss.level === 'error' ? '错误' : '警告'}</Tag>
-                      <Text style={{ fontSize: 12, fontFamily: 'monospace' }}>{iss.field}</Text>
-                      <Text type="secondary" style={{ fontSize: 11 }} ellipsis>{iss.request}</Text>
-                    </Flex>
-                    <Text style={{ fontSize: 12 }}>{iss.message}</Text>
+            <List size="small" dataSource={preflightModal.issues} renderItem={(iss) => (
+              <List.Item>
+                <Flex vertical gap={2} style={{ width: '100%' }}>
+                  <Flex gap={6} align="center">
+                    <Tag color={iss.level === 'error' ? 'error' : 'warning'} style={{ margin: 0 }}>{iss.level === 'error' ? '错误' : '警告'}</Tag>
+                    <Text style={{ fontSize: 12, fontFamily: 'monospace' }}>{iss.field}</Text>
+                    <Text type="secondary" style={{ fontSize: 11 }} ellipsis>{iss.request}</Text>
                   </Flex>
-                </List.Item>
-              )}
-            />
+                  <Text style={{ fontSize: 12 }}>{iss.message}</Text>
+                </Flex>
+              </List.Item>
+            )} />
           </div>
         </div>
       </Modal>

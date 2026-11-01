@@ -26,8 +26,6 @@ export function ProjectProvider({ children }) {
   const projectsRef = useRef(projects)
   projectsRef.current = projects
 
-  // 💡 [修复 #2] 统一的同步写入入口：setState 内部先算 next，再同步刷 ref，
-  // 让 getProjectSnapshot 在 setProjects 后的同一同步块内读到最新值。
   const setProjectsSync = useCallback((updater) => {
     setProjects((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater
@@ -54,18 +52,23 @@ export function ProjectProvider({ children }) {
 
   const importProject = (projectData) => {
     const p = { ...projectData, id: uid(), createdAt: Date.now(), name: projectData.name ? `${projectData.name} (导入)` : '导入的项目' }
+    if (!p.startupPlan) p.startupPlan = { groups: [] }
     setProjectsSync((prev) => [...prev, p])
     return p
   }
 
   const createProject = (name) => {
-    const p = { id: uid(), name, createdAt: Date.now(), groups: [], proxy: '' }
+    const p = { id: uid(), name, createdAt: Date.now(), groups: [], proxy: '', startupPlan: { groups: [] } }
     setProjectsSync((prev) => [...prev, p])
     return p
   }
 
   const deleteProject = (projectId) => setProjectsSync((prev) => prev.filter((p) => p.id !== projectId))
   const renameProject = (projectId, newName) => setProjectsSync((prev) => prev.map((p) => (p.id === projectId ? { ...p, name: newName } : p)))
+
+  // 💡 启动预案
+  const updateStartupPlan = (projectId, plan) =>
+    setProjectsSync((prev) => prev.map((p) => (p.id === projectId ? { ...p, startupPlan: plan } : p)))
 
   const createGroup = (projectId, name) => {
     const g = {
@@ -118,9 +121,6 @@ export function ProjectProvider({ children }) {
     }))
   }
 
-  // 💡 [修复 #3 支撑] updateSubGroup 支持「对象 patch」与「函数式 patch」两种：
-  // - 对象：{ ...prev, ...patch }
-  // - 函数：函数返回 patch，内部合并。避免调用方把旧 subConfig 一起塞进来覆盖。
   const updateSubGroup = (projectId, groupId, subGroupData) => {
     setProjectsSync((prev) => prev.map((p) => {
       if (p.id !== projectId) return p
@@ -136,8 +136,17 @@ export function ProjectProvider({ children }) {
     }))
   }
 
-  const deleteGroup = (projectId, groupId) =>
-    setProjectsSync((prev) => prev.map((p) => (p.id === projectId ? { ...p, groups: p.groups.filter((g) => g.id !== groupId) } : p)))
+  const deleteGroup = (projectId, groupId) => {
+    setProjectsSync((prev) => prev.map((p) => {
+      if (p.id !== projectId) return p
+      // 同时从启动预案中移除该组
+      const groups = p.groups.filter((g) => g.id !== groupId)
+      const startupPlan = p.startupPlan
+        ? { ...p.startupPlan, groups: (p.startupPlan.groups || []).filter((g) => g.groupId !== groupId) }
+        : { groups: [] }
+      return { ...p, groups, startupPlan }
+    }))
+  }
 
   const addRequestsToGroup = (projectId, groupId, requests) => {
     setProjectsSync((prev) => prev.map((p) => {
@@ -199,7 +208,6 @@ export function ProjectProvider({ children }) {
     }))
   }
 
-  // 💡 [修复 #4 支撑] 支持 updater: 数组 | (prevArr) => 新数组
   const updateGroupRequests = (projectId, groupId, updater) =>
     setProjectsSync((prev) => prev.map((p) => {
       if (p.id !== projectId) return p
@@ -358,6 +366,7 @@ export function ProjectProvider({ children }) {
       updateGroupRequests, updateSubGroupRequests, reorderGroupRequests,
       updateRequestFields, applyResponse, resetGroupRequests, resetSelectedRequests,
       updateGroupConfig, removeGroupConfig, updateSubGroup,
+      updateStartupPlan,
       getProjectSnapshot,
     }}>
       {children}
