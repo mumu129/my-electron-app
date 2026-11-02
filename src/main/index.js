@@ -11,7 +11,6 @@ import icon from '../../resources/icon.png?asset'
 const CONFIG_FILE = () => join(app.getPath('userData'), 'config.json')
 let globalBasePath = app.getPath('documents')
 
-// 统一安全路径段：拒绝 .. / . / 空 / 隐藏文件 / Windows 保留名
 const WINDOWS_RESERVED = new Set(['con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9', 'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9'])
 function safeSegment(name, { allowDotPrefix = false } = {}) {
   if (typeof name !== 'string') return null
@@ -57,7 +56,6 @@ function safeLibName(fileName) {
   return fileName
 }
 
-// 子进程管理
 const runningChildren = new Set()
 let runTimer = null
 
@@ -177,7 +175,6 @@ function registerWorkareaHandlers() {
   })
 }
 
-// proxy session LRU 限制
 const proxySessionCache = new Map()
 const PROXY_CACHE_MAX = 16
 async function getProxySession(proxyUrl) {
@@ -201,57 +198,183 @@ async function getProxySession(proxyUrl) {
 
 function registerHttpHandler() {
   ipcMain.handle('http:request', async (_event, { url, method, headers, body, proxy, timeoutMs }) => {
-  const started = Date.now()
-  // 💡 支持请求级超时
-  const timeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30000
-  if (!url || typeof url !== 'string') return { status: 0, statusText: 'error', body: '[bad url] 空', headers: [], time: 0 }
-  try { new URL(url) } catch (e) { return { status: 0, statusText: 'error', body: `[bad url] ${url} -> ${e.message}`, headers: [], time: 0 } }
-  let proxySession = null
-  if (proxy) {
-    try { proxySession = await getProxySession(proxy) } catch (e) { return { status: 0, statusText: 'error', body: `[proxy error] ${e.message}`, headers: [], time: 0 } }
-  }
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (val) => { if (!settled) { settled = true; resolve(val) } }
-    let request
+    const started = Date.now()
+    const timeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30000
+    if (!url || typeof url !== 'string') return { status: 0, statusText: 'error', body: '[bad url] 空', headers: [], time: 0 }
+    try { new URL(url) } catch (e) { return { status: 0, statusText: 'error', body: `[bad url] ${url} -> ${e.message}`, headers: [], time: 0 } }
+    let proxySession = null
+    if (proxy) {
+      try { proxySession = await getProxySession(proxy) } catch (e) { return { status: 0, statusText: 'error', body: `[proxy error] ${e.message}`, headers: [], time: 0 } }
+    }
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (val) => { if (!settled) { settled = true; resolve(val) } }
+      let request
+      try {
+        const opts = { url, method: (method || 'GET').toUpperCase(), redirect: 'follow' }
+        if (proxySession) opts.session = proxySession
+        request = net.request(opts)
+      } catch (e) { return finish({ status: 0, statusText: 'error', body: `[net.request 失败] ${e.message}`, headers: [], time: 0 }) }
+      const timer = setTimeout(() => {
+        try { request.abort() } catch {}
+        finish({ status: 0, statusText: 'timeout', body: `请求超时（${timeout}ms）\nurl=${url}`, headers: [], time: Date.now() - started })
+      }, timeout)
+      Object.entries(headers || {}).forEach(([k, v]) => { try { request.setHeader(k, v) } catch {} })
+      request.on('response', (response) => {
+        const chunks = []
+        response.on('data', (c) => chunks.push(Buffer.from(c)))
+        response.on('end', () => {
+          clearTimeout(timer)
+          finish({
+            status: response.statusCode,
+            statusText: response.statusMessage || '',
+            headers: Object.entries(response.headers || {}).map(([k, v]) => ({ name: k, value: Array.isArray(v) ? v.join(', ') : String(v) })),
+            body: Buffer.concat(chunks).toString('utf-8'),
+            time: Date.now() - started,
+          })
+        })
+        response.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[response error] ${err.message}`, headers: [], time: Date.now() - started }) })
+      })
+      request.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[net error] ${err.message || err}`, headers: [], time: Date.now() - started }) })
+      try {
+        if (body != null) {
+          if (body instanceof Uint8Array || Buffer.isBuffer(body)) request.write(Buffer.from(body))
+          else request.write(typeof body === 'string' ? body : JSON.stringify(body))
+        }
+        request.end()
+      } catch (e) { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[write error] ${e.message}`, headers: [], time: Date.now() - started }) }
+    })
+  })
+}
+
+// ============================================================
+// 💡 代理健康检查
+// ============================================================
+function registerProxyCheckHandler() {
+  ipcMain.handle('proxy:check', async (_e, { proxyUrl, testUrl, timeoutMs }) => {
+    if (!proxyUrl || typeof proxyUrl !== 'string') {
+      return { ok: false, error: '代理地址为空' }
+    }
+    const target = String(testUrl || 'http://httpbin.org/ip').trim()
+    try { new URL(target) } catch (e) {
+      return { ok: false, error: `测试 URL 非法: ${e.message}` }
+    }
+    const timeout = Number(timeoutMs) > 0 ? Number(timeoutMs) : 15000
+    const started = Date.now()
+
+    let proxySession
     try {
-      const opts = { url, method: (method || 'GET').toUpperCase(), redirect: 'follow' }
-      if (proxySession) opts.session = proxySession
-      request = net.request(opts)
-    } catch (e) { return finish({ status: 0, statusText: 'error', body: `[net.request 失败] ${e.message}`, headers: [], time: 0 }) }
-    const timer = setTimeout(() => {
-      try { request.abort() } catch {}
-      finish({ status: 0, statusText: 'timeout', body: `请求超时（${timeout}ms）\nurl=${url}`, headers: [], time: Date.now() - started })
-    }, timeout)
-    Object.entries(headers || {}).forEach(([k, v]) => { try { request.setHeader(k, v) } catch {} })
-    request.on('response', (response) => {
-      const chunks = []
-      response.on('data', (c) => chunks.push(Buffer.from(c)))
-      response.on('end', () => {
-        clearTimeout(timer)
-        finish({
-          status: response.statusCode,
-          statusText: response.statusMessage || '',
-          headers: Object.entries(response.headers || {}).map(([k, v]) => ({ name: k, value: Array.isArray(v) ? v.join(', ') : String(v) })),
-          body: Buffer.concat(chunks).toString('utf-8'),
-          time: Date.now() - started,
+      proxySession = await getProxySession(proxyUrl)
+    } catch (e) {
+      return { ok: false, error: `代理配置失败: ${e.message}` }
+    }
+    if (!proxySession) return { ok: false, error: '无法创建代理 session' }
+
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (val) => { if (!settled) { settled = true; resolve(val) } }
+      let request
+      try {
+        request = net.request({ url: target, method: 'GET', redirect: 'follow', session: proxySession })
+      } catch (e) {
+        return finish({ ok: false, error: `创建请求失败: ${e.message}` })
+      }
+
+      const timer = setTimeout(() => {
+        try { request.abort() } catch {}
+        finish({ ok: false, error: `超时 ${timeout}ms`, time: Date.now() - started })
+      }, timeout)
+
+      request.on('response', (response) => {
+        const chunks = []
+        response.on('data', (c) => chunks.push(Buffer.from(c)))
+        response.on('end', () => {
+          clearTimeout(timer)
+          const body = Buffer.concat(chunks).toString('utf-8')
+          const ok = response.statusCode >= 200 && response.statusCode < 400
+          let ip = ''
+          try {
+            const j = JSON.parse(body)
+            ip = j.origin || j.ip || ''
+          } catch {
+            const m = body.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/)
+            if (m) ip = m[0]
+          }
+          finish({
+            ok,
+            status: response.statusCode,
+            time: Date.now() - started,
+            ip,
+            error: ok ? null : `HTTP ${response.statusCode}`,
+          })
+        })
+        response.on('error', (err) => {
+          clearTimeout(timer)
+          finish({ ok: false, error: `响应错误: ${err.message}`, time: Date.now() - started })
         })
       })
-      response.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[response error] ${err.message}`, headers: [], time: Date.now() - started }) })
-    })
-    request.on('error', (err) => { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[net error] ${err.message || err}`, headers: [], time: Date.now() - started }) })
-    try {
-      if (body != null) {
-        if (body instanceof Uint8Array || Buffer.isBuffer(body)) request.write(Buffer.from(body))
-        else request.write(typeof body === 'string' ? body : JSON.stringify(body))
+
+      request.on('error', (err) => {
+        clearTimeout(timer)
+        const msg = String(err?.message || err)
+        let hint = msg
+        if (/ECONNREFUSED/i.test(msg)) hint = `代理拒绝连接（${msg}）— 检查端口/防火墙`
+        else if (/ETIMEDOUT|timeout/i.test(msg)) hint = `代理无响应（${msg}）`
+        else if (/407/i.test(msg)) hint = `代理需要认证（${msg}）`
+        else if (/ENOTFOUND/i.test(msg)) hint = `代理域名解析失败（${msg}）`
+        else if (/ECONNRESET/i.test(msg)) hint = `连接被重置（${msg}）`
+        else if (/ERR_PROXY/i.test(msg)) hint = `代理错误（${msg}）`
+        finish({ ok: false, error: hint, time: Date.now() - started })
+      })
+
+      try { request.end() } catch (e) {
+        clearTimeout(timer)
+        finish({ ok: false, error: `请求发送失败: ${e.message}` })
       }
-      request.end()
-    } catch (e) { clearTimeout(timer); finish({ status: 0, statusText: 'error', body: `[write error] ${e.message}`, headers: [], time: Date.now() - started }) }
+    })
   })
-})
 }
 
 function aesCipherName(kind, keyLen) { return `aes-${keyLen * 8}-${kind}` }
+
+// ============================================================
+// 💡 RSA 密钥输入兼容：PEM 或裸 Base64（SPKI / PKCS8 / PKCS1）
+// ============================================================
+function _toPemFromBase64(base64Str, headerCandidates) {
+  const clean = String(base64Str || '').replace(/\s+/g, '')
+  if (!clean) throw new Error('密钥为空')
+  const lines = []
+  for (let i = 0; i < clean.length; i += 64) lines.push(clean.slice(i, i + 64))
+  const body = lines.join('\n')
+  const errors = []
+  for (const h of headerCandidates) {
+    const pem = `-----BEGIN ${h}-----\n${body}\n-----END ${h}-----`
+    try {
+      if (h.includes('PUBLIC')) crypto.createPublicKey(pem)
+      else crypto.createPrivateKey(pem)
+      return pem
+    } catch (e) {
+      errors.push(`${h}: ${e.message}`)
+    }
+  }
+  throw new Error(`无法解析密钥（尝试了 ${headerCandidates.join(' / ')}）`)
+}
+
+function resolvePublicKey(input) {
+  const s = String(input || '').trim()
+  if (!s) throw new Error('缺少公钥')
+  if (s.includes('-----BEGIN')) return crypto.createPublicKey(s)
+  const pem = _toPemFromBase64(s, ['PUBLIC KEY', 'RSA PUBLIC KEY'])
+  return crypto.createPublicKey(pem)
+}
+
+function resolvePrivateKey(input) {
+  const s = String(input || '').trim()
+  if (!s) throw new Error('缺少私钥')
+  if (s.includes('-----BEGIN')) return crypto.createPrivateKey(s)
+  const pem = _toPemFromBase64(s, ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY'])
+  return crypto.createPrivateKey(pem)
+}
 
 function registerCryptoHandler() {
   ipcMain.handle('crypto:transform', async (_e, { type, input, options = {} }) => {
@@ -321,10 +444,25 @@ function registerCryptoHandler() {
           const decipher = crypto.createDecipheriv('des-cbc', Buffer.from(options.key, 'hex'), Buffer.from(options.iv, 'hex'))
           return { ok: true, value: Buffer.concat([decipher.update(Buffer.from(s, 'base64')), decipher.final()]).toString('utf8') }
         }
-        case 'rsa-oaep-encrypt': return { ok: true, value: crypto.publicEncrypt({ key: options.publicKey, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING }, Buffer.from(s, 'utf8')).toString('base64') }
-        case 'rsa-oaep-decrypt': return { ok: true, value: crypto.privateDecrypt({ key: options.privateKey, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING }, Buffer.from(s, 'base64')).toString('utf8') }
-        case 'rsa-pkcs1-encrypt': return { ok: true, value: crypto.publicEncrypt({ key: options.publicKey, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(s, 'utf8')).toString('base64') }
-        case 'rsa-pkcs1-decrypt': return { ok: true, value: crypto.privateDecrypt({ key: options.privateKey, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(s, 'base64')).toString('utf8') }
+
+        // 💡 RSA 4 个 case：改为支持 Base64 或 PEM
+        case 'rsa-oaep-encrypt': {
+          const pub = resolvePublicKey(options.publicKey)
+          return { ok: true, value: crypto.publicEncrypt({ key: pub, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING }, Buffer.from(s, 'utf8')).toString('base64') }
+        }
+        case 'rsa-oaep-decrypt': {
+          const priv = resolvePrivateKey(options.privateKey)
+          return { ok: true, value: crypto.privateDecrypt({ key: priv, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING }, Buffer.from(s, 'base64')).toString('utf8') }
+        }
+        case 'rsa-pkcs1-encrypt': {
+          const pub = resolvePublicKey(options.publicKey)
+          return { ok: true, value: crypto.publicEncrypt({ key: pub, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(s, 'utf8')).toString('base64') }
+        }
+        case 'rsa-pkcs1-decrypt': {
+          const priv = resolvePrivateKey(options.privateKey)
+          return { ok: true, value: crypto.privateDecrypt({ key: priv, padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(s, 'base64')).toString('utf8') }
+        }
+
         case 'jwt-hs256-sign': {
           const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
           const payload = Buffer.from(s, 'utf8').toString('base64url')
@@ -338,16 +476,13 @@ function registerCryptoHandler() {
 }
 
 // ============================================================
-// 💡 [修复] script:run 统一注入 require / module / exports / 路径 / ctx
-//    - script 标签与 js-expression 都走这一条路径
-//    - 不再区分 context 有无，两种调用参数统一
+// script:run —— 统一注入 require / module / exports / 路径 / vars / envs / responses / md5 / config
 // ============================================================
 function registerScriptHandler() {
   ipcMain.handle('script:run', async (_e, { code, input, config, context }) => {
     try {
       const { createRequire } = await import('module')
       const libsDir = getLibsDir()
-      // require 基准指向 libs 目录，用户脚本 require('./xxx') 相对 libs
       const req = createRequire(join(libsDir, '_runner.js'))
 
       const processResult = (res) => {
@@ -359,7 +494,6 @@ function registerScriptHandler() {
 
       const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor
 
-      // 💡 统一 ctx：config 兼容 script 标签传值；vars/envs/responses 兼容 js-expression
       const ctx = {
         config: config || {},
         input,
@@ -368,11 +502,8 @@ function registerScriptHandler() {
         responses: context?.responses || [],
       }
 
-      // md5 便捷函数（两种脚本都可用）
-      const cryptoMod = (await import('crypto')).default
-      const md5Fn = (text) => cryptoMod.createHash('md5').update(String(text)).digest('hex')
+      const md5Fn = (text) => crypto.createHash('md5').update(String(text)).digest('hex')
 
-      // 💡 统一参数列表：require / module / exports / 4 个路径常量 / vars / envs / responses / md5 / config
       const fn = new AsyncFunction(
         'input', 'ctx', 'require', 'module', 'exports',
         'USER_DATA_PATH', 'APP_PATH', 'RESOURCES_PATH', 'LIBS_PATH',
@@ -387,10 +518,8 @@ function registerScriptHandler() {
         ctx.vars, ctx.envs, ctx.responses, md5Fn, ctx.config
       )
 
-      // 写法 1：直接 return
       if (directResult !== undefined) return { ok: true, value: processResult(directResult) }
 
-      // 写法 2：module.exports = function(input, ctx) { ... }
       const exportedFn = mod.exports?.default || mod.exports
       if (typeof exportedFn === 'function') {
         const result = await exportedFn(input, ctx)
@@ -423,6 +552,7 @@ app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.electron')
   app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
   registerHttpHandler()
+  registerProxyCheckHandler()
   registerLibHandlers()
   registerWorkareaHandlers()
   registerCryptoHandler()

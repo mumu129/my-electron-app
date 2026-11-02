@@ -1,5 +1,5 @@
 appId: com.electron.app
-productName: my-electron-app
+productName: hardware-encryption-workbench
 directories:
   buildResources: build
 files:

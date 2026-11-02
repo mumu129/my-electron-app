@@ -24,6 +24,9 @@ const api = {
     run: (payload) => ipcRenderer.invoke('workarea:run', payload),
     stopRun: () => ipcRenderer.invoke('workarea:stop-run'),
   },
+  proxy: {                                              // 💡 新增
+    check: (payload) => ipcRenderer.invoke('proxy:check', payload),
+  },
 }
 
 if (process.contextIsolated) {

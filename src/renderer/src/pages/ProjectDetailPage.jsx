@@ -1,12 +1,12 @@
 // src/renderer/src/pages/ProjectDetailPage.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Button, Card, Col, Row, Flex, Tag, Typography, Empty, Popconfirm,
+  Button,Alert, Card, Col, Row, Flex, Tag, Typography, Empty, Popconfirm,
   App as AntApp, Modal, Input, Tooltip, List, Checkbox, InputNumber, Space, Drawer,
   Badge, Segmented, Table, Dropdown, Divider, Breadcrumb, Form, Splitter, Switch,
 } from 'antd';
 import {
-  ArrowLeftOutlined, DeleteOutlined, FolderOpenOutlined,
+  ArrowLeftOutlined,ApiOutlined, DeleteOutlined, FolderOpenOutlined,
   EditOutlined, ReloadOutlined, HolderOutlined, PlayCircleOutlined, StopOutlined,
   DownloadOutlined, GlobalOutlined, PlusOutlined, SettingOutlined,
   MoreOutlined, FolderOutlined, SaveOutlined, KeyOutlined,
@@ -51,6 +51,37 @@ export default function ProjectDetailPage({ projectId, onBack, onOpenProjectSett
 
   const [proxyModalOpen, setProxyModalOpen] = useState(false);
   const [proxyValue, setProxyValue] = useState('');
+
+  // 💡 代理测试状态
+const [proxyCheckResult, setProxyCheckResult] = useState(null);   // { ok, error?, time?, ip? }
+const [proxyChecking, setProxyChecking] = useState(false);
+
+const handleTestProxy = async () => {
+  const url = (proxyValue || '').trim();
+  if (!url) {
+    setProxyCheckResult({ ok: false, error: '请先输入代理地址' });
+    return;
+  }
+  setProxyChecking(true);
+  setProxyCheckResult(null);
+  try {
+    const r = await window.electronAPI?.proxy?.check({ proxyUrl: url, timeoutMs: 15000 });
+    if (!r) {
+      setProxyCheckResult({ ok: false, error: '主进程未响应（请重启应用）' });
+      return;
+    }
+    setProxyCheckResult(r);
+  } catch (e) {
+    setProxyCheckResult({ ok: false, error: String(e?.message || e) });
+  } finally {
+    setProxyChecking(false);
+  }
+};
+
+// 打开 Modal 时清空上次的测试结果
+useEffect(() => {
+  if (proxyModalOpen) setProxyCheckResult(null);
+}, [proxyModalOpen]);
 
   const [newGroupModalOpen, setNewGroupModalOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
@@ -648,11 +679,58 @@ export default function ProjectDetailPage({ projectId, onBack, onOpenProjectSett
         </Flex>
       </Drawer>
 
-      <Modal title={`设置 ${isSubMode ? '副组' : '主组'} 网络代理`} open={proxyModalOpen}
-        onOk={() => { if (isSubMode) saveSubConfig({ proxy: proxyValue }); else updateGroupProxy(projectId, activeGroup.id, proxyValue); setProxyModalOpen(false); }}
-        onCancel={() => setProxyModalOpen(false)} okText="保存">
-        <Input placeholder="如 http://127.0.0.1:7890 (留空即不使用)" value={proxyValue} onChange={(e) => setProxyValue(e.target.value)} />
-      </Modal>
+      <Modal
+  title={`设置 ${isSubMode ? '副组' : '主组'} 网络代理`}
+  open={proxyModalOpen}
+  onOk={() => {
+    if (isSubMode) saveSubConfig({ proxy: proxyValue });
+    else updateGroupProxy(projectId, activeGroup.id, proxyValue);
+    setProxyModalOpen(false);
+  }}
+  onCancel={() => setProxyModalOpen(false)}
+  okText="保存"
+  width={560}
+  destroyOnHidden
+>
+  <Space.Compact style={{ width: '100%', marginTop: 8 }}>
+    <Input
+      placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080（留空即不使用）"
+      value={proxyValue}
+      onChange={(e) => {
+        setProxyValue(e.target.value);
+        setProxyCheckResult(null);   // 改了地址就清空上次结果
+      }}
+      onPressEnter={handleTestProxy}
+      spellCheck={false}
+      style={{ flex: 1 }}
+    />
+    <Button
+      icon={<ApiOutlined />}
+      loading={proxyChecking}
+      onClick={handleTestProxy}
+      disabled={!proxyValue.trim()}
+    >
+      {proxyChecking ? '测试中...' : '测试'}
+    </Button>
+  </Space.Compact>
+
+  {proxyCheckResult && (
+    <Alert
+      style={{ marginTop: 12 }}
+      type={proxyCheckResult.ok ? 'success' : 'error'}
+      showIcon
+      message={
+        proxyCheckResult.ok
+          ? `代理可用${proxyCheckResult.ip ? ` · 出口 IP ${proxyCheckResult.ip}` : ''} · 耗时 ${proxyCheckResult.time}ms`
+          : `代理不可用：${proxyCheckResult.error}`
+      }
+    />
+  )}
+
+  <Text type="secondary" style={{ display: 'block', marginTop: 10, fontSize: 12 }}>
+    测试通过后再点「保存」生效。测试会通过该代理访问 <Text code>http://httpbin.org/ip</Text>，约 15 秒超时。
+  </Text>
+</Modal>
 
       <Modal title="执行主组与副组" open={runModalOpen}
         onOk={() => {

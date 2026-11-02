@@ -1,9 +1,12 @@
 // src/renderer/src/components/HackvertorEditor.jsx
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Flex, Modal, Form, Input, Tag, Space, Typography, App, List, Button, Splitter, Segmented, Tooltip } from 'antd';
+import { Flex, Modal, Form, Input, Tag, Space, Typography, App, List, Button, Splitter, Segmented, Tooltip, Switch, Empty } from 'antd';
 import {
   TagOutlined, CodeOutlined, SafetyCertificateOutlined, SearchOutlined,
-  MenuFoldOutlined, MenuUnfoldOutlined
+  MenuFoldOutlined, MenuUnfoldOutlined,
+  AppstoreOutlined, GlobalOutlined, InboxOutlined,
+  FileZipOutlined, FileTextOutlined, LockOutlined, SafetyOutlined,
+  ClockCircleOutlined, CalculatorOutlined, ApiOutlined,
 } from '@ant-design/icons';
 import { processTags, wrapTag } from '../utils/hackTags';
 import { TRANSFORMS, TRANSFORM_GROUPS, applyTransform, getAlgoTagType } from '../utils/strictTransforms';
@@ -13,6 +16,17 @@ import { useAlgorithms } from '../store/algorithmStore';
 import { validateTagText } from '../utils/validateTags';
 
 const { Text } = Typography;
+
+// 分组图标映射
+const GROUP_ICON_MAP = {
+  encoding: <FileZipOutlined />,
+  format: <FileTextOutlined />,
+  crypto: <LockOutlined />,
+  hash: <SafetyOutlined />,
+  time: <ClockCircleOutlined />,
+  number: <CalculatorOutlined />,
+  app: <ApiOutlined />,
+};
 
 function commitReplacement(value, start, end, replacement) {
   const before = (value || '').slice(0, start);
@@ -98,11 +112,11 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
   const { message } = App.useApp();
   const { scripts } = useScripts();
   const { envs } = useEnvs();
-  // 💡 [新增] 拿全局算法配置，用于语法校验
   const { algorithms } = useAlgorithms();
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [searchText, setSearchText] = useState('');
+  const [selectedGroup, setSelectedGroup] = useState('all');   // 💡 左侧选中的分类
   const [selectedText, setSelectedText] = useState({ text: '', start: 0, end: 0 });
   const [paramModal, setParamModal] = useState({ visible: false, action: null });
 
@@ -113,7 +127,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
   const [renderedJson, setRenderedJson] = useState(null);
   const [isRendering, setIsRendering] = useState(false);
   const [previewMode, setPreviewMode] = useState('text');
-  // 💡 [新增] 语法校验结果
   const [validationIssues, setValidationIssues] = useState([]);
 
   const [form] = Form.useForm();
@@ -149,7 +162,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     return () => { canceled = true; };
   }, [value, scripts, envs]);
 
-  // 💡 [新增] 实时语法校验（在 processTags 那个 useEffect 之后）
   useEffect(() => {
     const globalAlgos = algorithms.global || {};
     const issues = validateTagText(value || '', { envs, scripts, globalAlgos });
@@ -180,30 +192,25 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     if (s === t) { message.warning('请先选中一段文本再右键'); return; }
     setSelectedText({ text: el.value.substring(s, t), start: s, end: t });
     setSearchText('');
+    setSelectedGroup('all');     // 💡 每次打开重置分类
     setPickerOpen(true);
   };
 
+  // 过滤后的算法（不含 env / var）
   const filteredAlgos = useMemo(() => {
-    const kw = searchText.toLowerCase();
-
-    let builtin = Object.entries(TRANSFORMS)
-      .filter(([k, v]) => (v.label.toLowerCase().includes(kw) || k.toLowerCase().includes(kw)))
+    const kw = searchText.toLowerCase().trim();
+    const builtin = Object.entries(TRANSFORMS)
+      .filter(([k, v]) => !kw || v.label.toLowerCase().includes(kw) || k.toLowerCase().includes(kw))
       .map(([k, v]) => ({ key: k, type: 'builtin', label: v.label, group: v.group || 'other', tpl: v }));
 
-    if ('提取为变量'.includes(kw) || 'var'.includes(kw)) {
-      builtin.unshift({
-        key: '__extract_var__', type: 'var', label: '📦 提取为变量 (供 JS 调用)', group: 'app', tpl: null
-      });
-    }
-
-    let customScripts = Object.entries(scripts || {})
-      .filter(([k, v]) => (v.label || k).toLowerCase().includes(kw) || k.toLowerCase().includes(kw))
+    const customScripts = Object.entries(scripts || {})
+      .filter(([k, v]) => !kw || (v.label || k).toLowerCase().includes(kw) || k.toLowerCase().includes(kw))
       .map(([k, v]) => ({
         key: k,
         type: 'script',
-        label: '⚙️ ' + (v.label || k),
+        label: v.label || k,
         group: 'script',
-        tpl: v
+        tpl: v,
       }));
 
     return [...builtin, ...customScripts];
@@ -218,33 +225,134 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     return groups;
   }, [filteredAlgos]);
 
+  // 💡 左侧分类项（可点击）
+  const categoryItems = useMemo(() => {
+    const items = [
+      {
+        key: 'all',
+        label: '全部算法',
+        icon: <AppstoreOutlined />,
+        count: filteredAlgos.length,
+      },
+    ];
+
+    Object.entries(TRANSFORM_GROUPS).forEach(([g, label]) => {
+      if (!groupedAlgos[g]) return;
+      items.push({
+        key: g,
+        label,
+        icon: GROUP_ICON_MAP[g] || <AppstoreOutlined />,
+        count: groupedAlgos[g].length,
+      });
+    });
+
+    items.push({
+      key: 'env',
+      label: '环境变量',
+      icon: <GlobalOutlined />,
+      count: Object.keys(envs).length,
+      divider: true,
+    });
+    items.push({
+      key: 'var',
+      label: '提取为变量',
+      icon: <InboxOutlined />,
+      count: null,
+    });
+
+    if (groupedAlgos['script']?.length > 0) {
+      items.push({
+        key: 'script',
+        label: '主进程脚本',
+        icon: <CodeOutlined />,
+        count: groupedAlgos['script'].length,
+        divider: true,
+      });
+    }
+
+    return items;
+  }, [filteredAlgos, groupedAlgos, envs]);
+
+  // 💡 当前右侧要显示的内容
+  const displayItems = useMemo(() => {
+    const kw = searchText.toLowerCase().trim();
+
+    // 搜索时：算法 + env 一起搜
+    if (kw) {
+      const envMatches = Object.keys(envs)
+        .filter((k) => k.toLowerCase().includes(kw))
+        .map((k) => ({
+          key: k,
+          type: 'env',
+          label: k,
+          description: `当前值：${envs[k] || '（空）'}`,
+        }));
+      return [...filteredAlgos, ...envMatches];
+    }
+
+    if (selectedGroup === 'all') return filteredAlgos;
+
+    if (selectedGroup === 'env') {
+      return Object.keys(envs).map((k) => ({
+        key: k,
+        type: 'env',
+        label: k,
+        description: `当前值：${envs[k] || '（空）'}`,
+      }));
+    }
+
+    if (selectedGroup === 'var') {
+      return [{
+        key: '__extract_var__',
+        type: 'var',
+        label: '📦 提取为变量',
+        description: '把选中文本存入 vars，后续 <@script> 标签可用 vars.变量名 读取',
+      }];
+    }
+
+    return groupedAlgos[selectedGroup] || [];
+  }, [filteredAlgos, groupedAlgos, selectedGroup, searchText, envs]);
+
+  // 💡 点击某个条目
   const applyAlgo = async (item) => {
+    // 提取为变量
     if (item.type === 'var') {
       setVarModal({ visible: true });
       setPickerOpen(false);
       return;
     }
 
+    // 插入环境变量
+    if (item.type === 'env') {
+      const envKey = item.key;
+      const wrapped = wrapTag(`env:${envKey}`, selectedText.text);
+      const { newText } = commitReplacement(value, selectedText.start, selectedText.end, wrapped);
+      const innerStart = selectedText.start + wrapped.indexOf(selectedText.text);
+      pendingSelectRef.current = { start: innerStart, end: innerStart + selectedText.text.length };
+      onChange(newText);
+      message.success(`已插入环境变量 ${envKey}`);
+      setPickerOpen(false);
+      return;
+    }
+
+    // 主进程脚本
     if (item.type === 'script') {
       const resultText = selectedText.text;
       const wrapped = wrapTag(`script:${item.key}`, resultText);
-
       const { newText } = commitReplacement(value, selectedText.start, selectedText.end, wrapped);
       const innerStart = selectedText.start + wrapped.indexOf(resultText);
       pendingSelectRef.current = { start: innerStart, end: innerStart + resultText.length };
-
       onChange(newText);
       message.success(`已添加主进程脚本`);
       setPickerOpen(false);
       return;
     }
 
+    // 内置算法
     const tpl = item.tpl;
-
     if (tpl?.configFields?.length) {
       const savedConfig = groupConfigs[item.key];
       const hasAllRequired = tpl.configFields.every(f => !f.required || (savedConfig && savedConfig[f.name]));
-
       if (savedConfig && hasAllRequired) {
         doTransform(item.key, savedConfig);
       } else {
@@ -264,20 +372,13 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     const tpl = TRANSFORMS[algoKey];
     const paramStr = Object.keys(config || {}).length ? Object.entries(config).map(([k, v]) => `${k}=${v}`).join(',') : '';
     const tagType = getAlgoTagType(algoKey);
-
-    let finalReplaceText = '';
     let resultText = selectedText.text;
-
-    if (tagType === 'op') {
-      finalReplaceText = wrapTag(`op:${algoKey}`, resultText, paramStr);
-    } else {
-      finalReplaceText = wrapTag(`enc:${algoKey}`, resultText, paramStr);
-    }
-
+    let finalReplaceText = '';
+    if (tagType === 'op') finalReplaceText = wrapTag(`op:${algoKey}`, resultText, paramStr);
+    else finalReplaceText = wrapTag(`enc:${algoKey}`, resultText, paramStr);
     const { newText } = commitReplacement(value, selectedText.start, selectedText.end, finalReplaceText);
     const innerStart = selectedText.start + finalReplaceText.indexOf(resultText);
     pendingSelectRef.current = { start: innerStart, end: innerStart + resultText.length };
-
     onChange(newText);
     message.success(`已应用算法: ${tpl?.label || algoKey}`);
     setPickerOpen(false);
@@ -309,6 +410,8 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     .json-tree-container::-webkit-scrollbar { width: 6px; height: 6px; }
     .json-tree-container::-webkit-scrollbar-thumb { background: #d9d9d9; border-radius: 4px; }
+    .algo-picker-side::-webkit-scrollbar { width: 4px; }
+    .algo-picker-side::-webkit-scrollbar-thumb { background: #e0e0e0; border-radius: 2px; }
   `;
 
   const errorCount = validationIssues.filter((x) => x.level === 'error').length;
@@ -318,7 +421,6 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
     <Flex vertical style={{ background: '#fff', border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden', width: '100%', height: '100%' }}>
       <style>{styles}</style>
 
-      {/* 💡 header：加语法校验状态 */}
       <Flex justify="space-between" align="center" style={{ padding: '4px 8px', background: '#fafafa', borderBottom: '1px solid #f0f0f0', flexShrink: 0 }}>
         <Space size={4}>
           <TagOutlined style={{ color: '#1677ff' }} />
@@ -339,10 +441,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
                 </div>
               }
             >
-              <Tag
-                color={errorCount > 0 ? 'error' : 'warning'}
-                style={{ marginLeft: 4, cursor: 'help' }}
-              >
+              <Tag color={errorCount > 0 ? 'error' : 'warning'} style={{ marginLeft: 4, cursor: 'help' }}>
                 {errorCount > 0 ? `${errorCount} 错` : ''}{errorCount > 0 && warnCount > 0 ? ' · ' : ''}{warnCount > 0 ? `${warnCount} 警` : ''}
               </Tag>
             </Tooltip>
@@ -426,37 +525,135 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
         </Splitter.Panel>
       </Splitter>
 
-      <Modal title="选择算法或操作" open={pickerOpen} onCancel={() => setPickerOpen(false)} footer={null} width={700} styles={{ body: { padding: 0 } }}>
-        <div style={{ display: 'flex', height: 450 }}>
-          <div style={{ width: 180, borderRight: '1px solid #f0f0f0', background: '#fafafa', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
-              {Object.entries(TRANSFORM_GROUPS).map(([g, label]) => {
-                if (!groupedAlgos[g]) return null;
-                return <div key={g} style={{ padding: '8px 12px', fontWeight: 500, color: '#1677ff' }}>{label}</div>;
-              })}
-              {groupedAlgos['script'] && <div style={{ padding: '8px 12px', fontWeight: 500, color: '#fa8c16' }}>⚙️ 主进程自定义脚本</div>}
-            </div>
+      {/* 💡 重做的算法选择器 */}
+      <Modal
+        title={<Space><TagOutlined style={{ color: '#1677ff' }} /><span>选择算法、变量或脚本</span></Space>}
+        open={pickerOpen}
+        onCancel={() => setPickerOpen(false)}
+        footer={null}
+        width={760}
+        styles={{ body: { padding: 0 } }}
+        destroyOnHidden
+      >
+        <div style={{ display: 'flex', height: 500 }}>
+          {/* 左侧分类栏 */}
+          <div
+            className="algo-picker-side"
+            style={{
+              width: 200,
+              borderRight: '1px solid #f0f0f0',
+              background: '#fafafa',
+              overflowY: 'auto',
+              flexShrink: 0,
+            }}
+          >
+            {categoryItems.map((cat, idx) => {
+              const isActive = selectedGroup === cat.key && !searchText.trim();
+              return (
+                <React.Fragment key={cat.key}>
+                  {cat.divider && <div style={{ height: 1, background: '#f0f0f0', margin: '4px 12px' }} />}
+                  <div
+                    onClick={() => {
+                      setSelectedGroup(cat.key);
+                      setSearchText('');
+                    }}
+                    style={{
+                      padding: '8px 12px',
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      background: isActive ? '#e6f4ff' : 'transparent',
+                      color: isActive ? '#1677ff' : '#333',
+                      fontWeight: isActive ? 500 : 'normal',
+                      borderRight: isActive ? '2px solid #1677ff' : '2px solid transparent',
+                      transition: 'all 0.15s',
+                    }}
+                    onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = '#f5f5f5'; }}
+                    onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <Space size={6}>
+                      {cat.icon}
+                      <span>{cat.label}</span>
+                    </Space>
+                    {cat.count != null && (
+                      <span style={{
+                        fontSize: 11,
+                        color: isActive ? '#1677ff' : '#999',
+                        background: isActive ? '#fff' : 'transparent',
+                        padding: '0 6px',
+                        borderRadius: 8,
+                        minWidth: 20,
+                        textAlign: 'center',
+                      }}>
+                        {cat.count}
+                      </span>
+                    )}
+                  </div>
+                </React.Fragment>
+              );
+            })}
           </div>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+
+          {/* 右侧内容 */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <div style={{ padding: 12, borderBottom: '1px solid #f0f0f0' }}>
-              <Input prefix={<SearchOutlined />} placeholder="搜索算法或脚本..." value={searchText} onChange={e => setSearchText(e.target.value)} allowClear />
+              <Input
+                prefix={<SearchOutlined />}
+                placeholder="搜索算法、脚本或环境变量..."
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                allowClear
+              />
             </div>
             <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
-              {Object.entries(groupedAlgos).map(([g, list]) => (
-                <div key={g} style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>{g === 'script' ? '主进程自定义脚本' : TRANSFORM_GROUPS[g]}</div>
-                  <List dataSource={list} renderItem={(item) => (
-                    <List.Item onClick={() => applyAlgo(item)} style={{ cursor: 'pointer', padding: '8px 12px', borderRadius: 6, background: '#fff', border: '1px solid #f0f0f0', marginBottom: 6 }}>
-                      <Text>{item.label}</Text>
+              {displayItems.length === 0 ? (
+                <Empty
+                  description={selectedGroup === 'env' ? '暂无环境变量（可在「算法配置 → 环境变量」中添加）' : '没有匹配项'}
+                  style={{ marginTop: 60 }}
+                />
+              ) : (
+                <List
+                  dataSource={displayItems}
+                  renderItem={(item) => (
+                    <List.Item
+                      onClick={() => applyAlgo(item)}
+                      style={{
+                        cursor: 'pointer',
+                        padding: '10px 12px',
+                        borderRadius: 6,
+                        background: '#fff',
+                        border: '1px solid #f0f0f0',
+                        marginBottom: 6,
+                        transition: 'all 0.15s',
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#1677ff'; e.currentTarget.style.background = '#f0f8ff'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#f0f0f0'; e.currentTarget.style.background = '#fff'; }}
+                    >
+                      <div style={{ width: '100%' }}>
+                        <Flex align="center" gap={6} wrap>
+                          <Text strong>{item.label}</Text>
+                          {item.type === 'env' && <Tag color="magenta" style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}>ENV</Tag>}
+                          {item.type === 'var' && <Tag color="blue" style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}>VAR</Tag>}
+                          {item.type === 'script' && <Tag color="orange" style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}>SCRIPT</Tag>}
+                        </Flex>
+                        {item.description && (
+                          <div style={{ fontSize: 11, color: '#888', marginTop: 3, wordBreak: 'break-all' }}>
+                            {item.description}
+                          </div>
+                        )}
+                      </div>
                     </List.Item>
-                  )} />
-                </div>
-              ))}
+                  )}
+                />
+              )}
             </div>
           </div>
         </div>
       </Modal>
 
+      {/* 算法参数配置 Modal */}
       <Modal
         title={<span>配置参数：<Tag color="blue">{TRANSFORMS[paramModal.action?.algoKey]?.label}</Tag></span>}
         open={paramModal.visible}
@@ -515,6 +712,7 @@ export default function HackvertorEditor({ value, onChange, placeholder, readOnl
         </Form>
       </Modal>
 
+      {/* 提取为变量 Modal */}
       <Modal title="提取为变量" open={varModal.visible} onOk={handleVarOk} onCancel={() => setVarModal({ visible: false })} okText="提取">
         <Form form={varForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="name" label="变量名（供 JS 表达式调用）" rules={[{ required: true, pattern: /^[a-zA-Z0-9_]+$/, message: '只能包含字母数字下划线' }]}>

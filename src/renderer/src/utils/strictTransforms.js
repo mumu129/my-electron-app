@@ -92,15 +92,24 @@ export const TRANSFORMS = {
     decode: async (v, cfg) => await callCrypto('des-cbc-decrypt', v, cfg),
     encode: async (v, cfg) => await callCrypto('des-cbc-encrypt', v, cfg) },
 
-  'rsa-oaep': { label: 'RSA-OAEP', decodeLabel: 'RSA-OAEP 解密', encodeLabel: 'RSA-OAEP 加密', group: 'crypto', direction: 'both',
-    configFields: [{ name: 'privateKey', label: '私钥 PEM', multiline: true }, { name: 'publicKey', label: '公钥 PEM', multiline: true }],
-    decode: async (v, cfg) => await callCrypto('rsa-oaep-decrypt', v, cfg),
-    encode: async (v, cfg) => await callCrypto('rsa-oaep-encrypt', v, cfg) },
-  'rsa-pkcs1': { label: 'RSA-PKCS1', decodeLabel: 'RSA-PKCS1 解密', encodeLabel: 'RSA-PKCS1 加密', group: 'crypto', direction: 'both',
-    configFields: [{ name: 'privateKey', label: '私钥 PEM', multiline: true }, { name: 'publicKey', label: '公钥 PEM', multiline: true }],
-    decode: async (v, cfg) => await callCrypto('rsa-pkcs1-decrypt', v, cfg),
-    encode: async (v, cfg) => await callCrypto('rsa-pkcs1-encrypt', v, cfg) },
-
+ 'rsa-oaep': {
+  label: 'RSA-OAEP', decodeLabel: 'RSA-OAEP 解密', encodeLabel: 'RSA-OAEP 加密', group: 'crypto', direction: 'both',
+  configFields: [
+    { name: 'publicKey',  label: '公钥（加密必填 · Base64 或 PEM）', multiline: true, placeholder: 'MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJB...' },
+    { name: 'privateKey', label: '私钥（解密必填 · Base64 或 PEM）', multiline: true, placeholder: 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj...' },
+  ],
+  decode: async (v, cfg) => await callCrypto('rsa-oaep-decrypt', v, cfg),
+  encode: async (v, cfg) => await callCrypto('rsa-oaep-encrypt', v, cfg),
+},
+'rsa-pkcs1': {
+  label: 'RSA-PKCS1', decodeLabel: 'RSA-PKCS1 解密', encodeLabel: 'RSA-PKCS1 加密', group: 'crypto', direction: 'both',
+  configFields: [
+    { name: 'publicKey',  label: '公钥（加密必填 · Base64 或 PEM）', multiline: true, placeholder: 'MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJB...' },
+    { name: 'privateKey', label: '私钥（解密必填 · Base64 或 PEM）', multiline: true, placeholder: 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj...' },
+  ],
+  decode: async (v, cfg) => await callCrypto('rsa-pkcs1-decrypt', v, cfg),
+  encode: async (v, cfg) => await callCrypto('rsa-pkcs1-encrypt', v, cfg),
+},
   'md5': { label: 'MD5 哈希', group: 'hash', direction: 'decode-only', decode: async (v) => await callCrypto('md5', v) },
   'sha1': { label: 'SHA-1 哈希', group: 'hash', direction: 'decode-only', decode: async (v) => await callCrypto('sha1', v) },
   'sha256': { label: 'SHA-256 哈希', group: 'hash', direction: 'decode-only', decode: async (v) => await callCrypto('sha256', v) },
